@@ -55,6 +55,46 @@ docker run --rm \
 > - `test_stack` 在 eBPF 模式下需要 `CAP_BPF` 和 `CAP_PERFMON`。
 > - `--privileged` 一次性授予所有必要的 capabilities，无需逐一列举。
 
+## 用宿主机编译的二进制测试 eBPF
+
+如果已在宿主机完成构建，想跳过容器内重新编译、直接验证 eBPF 路径，可将宿主机的构建产物挂进特权容器运行。有一个关键约束：
+
+> **fixture 路径必须在容器内保持与宿主机完全一致。**
+
+原因：`FIXTURE_DIR` 在 CMake 构建时以绝对路径写死进测试二进制。例如宿主机路径为
+`/home/alice/uatu/build/tests/fixtures/target_debug`，
+容器内必须也能以同样路径访问该文件，否则子进程 `execl` 失败后静默退出，
+引发 `cannot resolve /proc/<pid>/exe` 错误。
+
+正确做法：**以原始路径挂载整个项目目录**，而非换一个挂载点：
+
+```bash
+# 正确：路径与宿主机一致
+docker run --rm --privileged --pid=host \
+  -v /home/alice/uatu:/home/alice/uatu \
+  -v /lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu \
+  -v /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu \
+  -v /lib64:/lib64 \
+  -w /home/alice/uatu \
+  ubuntu:22.04 \
+  build/tests/integration/test_watch
+
+# 错误：换了挂载点，fixture 路径对不上
+# docker run ... -v /home/alice/uatu:/uatu ...
+```
+
+`-v /lib/x86_64-linux-gnu` 等挂载是为了让宿主机编译的二进制找到与构建时完全一致的动态库版本，避免 ABI 不兼容。如果容器内 `apt install` 的库版本足够新（≥ 宿主机版本），也可以省略这些挂载，直接安装依赖：
+
+```bash
+docker run --rm --privileged --pid=host \
+  -v /home/alice/uatu:/home/alice/uatu \
+  -w /home/alice/uatu \
+  ubuntu:24.04 bash -c "
+    apt-get update -qq && apt-get install -qq -y libdw1 libelf1 zlib1g libstdc++6
+    build/tests/integration/test_watch
+  "
+```
+
 ## 开发环境（挂载源码的 dev 容器）
 
 dev 容器挂载本地源码到 `/src`，修改代码后可直接在容器内重新编译，无需重建镜像：

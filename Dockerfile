@@ -12,6 +12,14 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /src
 COPY . .
 
+# Build vendored libbpf 1.x first (Ubuntu 22.04 system libbpf 0.5.0 is
+# incompatible with kernel 6.x BTF format).
+RUN cd third_party/libbpf/src \
+    && make BUILD_STATIC_ONLY=1 OBJDIR=/src/build/libbpf \
+    && make BUILD_STATIC_ONLY=1 OBJDIR=/src/build/libbpf \
+       DESTDIR=/src/build/libbpf PREFIX="" install \
+    && cd /src
+
 RUN cmake -B build -S . -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build -j$(nproc)
 

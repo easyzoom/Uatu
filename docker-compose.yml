@@ -13,20 +13,20 @@ services:
       "
     working_dir: /src
 
-  # 集成测试（需要 privileged 访问 ptrace）
+  # 集成测试（需要 privileged 访问 ptrace / eBPF）
   test-integration:
     build:
       context: .
       target: builder
     command: >
       sh -c "
-        ./build/tests/integration/test_watch --gtest_filter='WatchStrip*' &&
+        ./build/tests/integration/test_watch &&
         ./build/tests/integration/test_trace &&
         ./build/tests/integration/test_stack
       "
     working_dir: /src
-    privileged: true   # ptrace 需要
-    pid: host          # 访问宿主机进程（如需 watch 宿主机进程）
+    privileged: true   # ptrace + CAP_BPF 需要
+    pid: host          # 访问宿主机进程（watch 需要）
 
   # 开发环境（交互式）
   dev:
