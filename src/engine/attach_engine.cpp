@@ -107,27 +107,27 @@ AttachEngine::watch_checked(const std::string& func_name,
     if (info.address == 0)
         return tl::unexpected(EngineError{"function has no address (inlined?): " + func_name});
 
-    // Step 2: BPF attach + poll（若 .bpf.o 不存在则 fallback 到 ptrace 模式）
-    std::vector<WatchEvent> events;
-    events.reserve(max_events);
-
-    // 检查 eBPF 对象文件是否存在
-    bool ebpf_available = (access(BPF_OBJ_PATH, R_OK) == 0);
-
-    if (!ebpf_available) {
-        auto trace_nodes = trace(func_name, max_events, timeout_ms);
-        for (auto& node : trace_nodes) {
+    // Step 2: ptrace fallback helper — used when .bpf.o is absent or eBPF load fails.
+    auto ptrace_watch = [&]() -> tl::expected<std::vector<WatchEvent>, EngineError> {
+        auto nodes = trace(func_name, max_events, timeout_ms);
+        std::vector<WatchEvent> evs;
+        for (auto& node : nodes) {
             WatchEvent ev;
             ev.func_name   = node.func_name;
             ev.duration_ns = node.duration_ns;
             ev.ret_value   = format_int_val(node.ret_raw, info.return_type);
-            events.push_back(std::move(ev));
+            evs.push_back(std::move(ev));
         }
-        return events;
-    }
+        return evs;
+    };
 
-    // eBPF section: any exception here (e.g. no CAP_BPF) becomes an EngineError
-    // so watch_checked() always honours its tl::expected contract.
+    // If the compiled eBPF object is absent, use ptrace directly.
+    if (access(BPF_OBJ_PATH, R_OK) != 0)
+        return ptrace_watch();
+
+    // eBPF path: any exception (e.g. no CAP_BPF) degrades gracefully to ptrace.
+    std::vector<WatchEvent> events;
+    events.reserve(max_events);
     try {
         ebpf::UprobeLoader loader(impl_->pid, BPF_OBJ_PATH);
         loader.attach(info.address);
@@ -156,8 +156,8 @@ AttachEngine::watch_checked(const std::string& func_name,
 
         loader.detach_all();
         return events;
-    } catch (const std::exception& ebpf_err) {
-        return tl::unexpected(EngineError{std::string("eBPF error: ") + ebpf_err.what()});
+    } catch (const std::exception&) {
+        return ptrace_watch();
     }
 }
 
@@ -448,20 +448,43 @@ std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
 }
 
 // ---------------------------------------------------------------------------
-// stack() — capture a stack trace using ptrace.
-// ptrace_scope=1 allows a parent process to trace its children; since the
-// test forks the fixture process, ptrace works without root.
-// We attach, read RBP/RIP, walk the frame-pointer chain, then detach.
+// stack() — capture call stacks by inserting a breakpoint at the target
+// function's entry and walking frames each time the breakpoint fires.
+//
+// At function entry (before the prologue executes):
+//   RSP → return address (pushed by CALL; identifies the caller)
+//   RBP = caller's saved frame pointer (prologue has not yet run)
+//
+// Frame chain built per sample:
+//   [0] = func_name  (the function whose entry fired the breakpoint)
+//   [1] = sym(*RSP)  (the instruction to return to ≈ the caller)
+//   [2+] walked via RBP chain (caller's caller, etc.)
 // ---------------------------------------------------------------------------
 std::vector<StackEvent> AttachEngine::stack(const std::string& func_name,
                                              int count, int timeout_ms) {
-    // Verify the function exists in DWARF
-    auto& finder    = impl_->get_finder();
-    auto  opt       = finder.find(func_name);
+    auto& finder = impl_->get_finder();
+    auto  opt    = finder.find(func_name);
     if (!opt)
         throw std::runtime_error("stack: function not found in DWARF: " + func_name);
+    if (opt->address == 0)
+        throw std::runtime_error("stack: function has no address (inlined?): " + func_name);
 
-    uint64_t aslr_slide = impl_->get_aslr_slide();
+    uint64_t aslr_slide  = impl_->get_aslr_slide();
+    uint64_t entry_vaddr = opt->address + aslr_slide;
+
+    if (ptrace(PTRACE_ATTACH, impl_->pid, nullptr, nullptr) < 0)
+        throw std::runtime_error("stack: PTRACE_ATTACH failed: " +
+                                 std::string(strerror(errno)));
+
+    int wstatus = 0;
+    auto wait_with_timeout = [&](int ms) {
+        return waitpid_timeout(impl_->pid, wstatus, ms);
+    };
+
+    if (!wait_with_timeout(5000)) {
+        ptrace(PTRACE_DETACH, impl_->pid, nullptr, nullptr);
+        throw std::runtime_error("stack: timeout after PTRACE_ATTACH");
+    }
 
     std::vector<StackEvent> results;
     results.reserve(count);
@@ -469,92 +492,157 @@ std::vector<StackEvent> AttachEngine::stack(const std::string& func_name,
     auto deadline = std::chrono::steady_clock::now() +
                     std::chrono::milliseconds(timeout_ms);
 
-    // Helper: read a 64-bit word from target process memory via ptrace
-    auto read_word = [&](uint64_t addr) -> std::optional<uint64_t> {
-        errno = 0;
-        long val = ptrace(PTRACE_PEEKDATA, impl_->pid,
-                          reinterpret_cast<void*>(addr), nullptr);
-        if (errno != 0) return std::nullopt;
-        return static_cast<uint64_t>(val);
+    // sym_for: runtime address → demangled name or "0x…" hex
+    auto sym_for = [&](uint64_t runtime_addr) -> std::string {
+        uint64_t link_addr = (runtime_addr >= aslr_slide)
+                             ? (runtime_addr - aslr_slide) : runtime_addr;
+        auto sym = finder.lookup_by_addr(link_addr);
+        if (sym) return *sym;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "0x%016lx", runtime_addr);
+        return buf;
     };
 
-    int collected = 0;
-    while (collected < count) {
+    // peek_word: read one 64-bit word from the target process
+    auto peek_word = [&](uint64_t addr) -> std::optional<uint64_t> {
+        errno = 0;
+        long v = ptrace(PTRACE_PEEKDATA, impl_->pid,
+                        reinterpret_cast<void*>(addr), nullptr);
+        if (errno != 0) return std::nullopt;
+        return static_cast<uint64_t>(v);
+    };
+
+    uint64_t orig_entry     = insert_breakpoint(impl_->pid, entry_vaddr);
+    bool     entry_armed    = true;
+    bool     waiting_for_exit = false;
+    uint64_t ret_vaddr      = 0;
+    uint64_t orig_ret       = 0;
+
+    // RAII guard restores whatever breakpoints remain if we exit early.
+    struct PtraceGuard {
+        pid_t    pid;
+        uint64_t entry_addr, &orig_entry_ref;
+        bool&    entry_armed_ref;
+        bool&    waiting_for_exit_ref;
+        uint64_t& ret_vaddr_ref, &orig_ret_ref;
+        bool active{true};
+        ~PtraceGuard() {
+            if (!active) return;
+            if (waiting_for_exit_ref && ret_vaddr_ref)
+                ptrace(PTRACE_POKEDATA, pid,
+                       reinterpret_cast<void*>(ret_vaddr_ref),
+                       reinterpret_cast<void*>(orig_ret_ref));
+            if (entry_armed_ref)
+                ptrace(PTRACE_POKEDATA, pid,
+                       reinterpret_cast<void*>(entry_addr),
+                       reinterpret_cast<void*>(orig_entry_ref));
+            ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+        }
+    };
+    PtraceGuard guard{impl_->pid,
+                      entry_vaddr, orig_entry, entry_armed,
+                      waiting_for_exit, ret_vaddr, orig_ret};
+
+    bool need_cont = true;
+    while (static_cast<int>(results.size()) < count) {
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) break;
 
-        // Attach to target
-        if (ptrace(PTRACE_ATTACH, impl_->pid, nullptr, nullptr) < 0)
-            break;
+        if (need_cont)
+            ptrace(PTRACE_CONT, impl_->pid, nullptr, nullptr);
+        need_cont = true;
 
-        int wstatus = 0;
-        int rem_ms = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
-        if (!waitpid_timeout(impl_->pid, wstatus, rem_ms)) {
-            ptrace(PTRACE_DETACH, impl_->pid, nullptr, nullptr);
-            break;
+        auto now2 = std::chrono::steady_clock::now();
+        if (now2 >= deadline) break;
+        int remaining_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - now2).count());
+        if (!wait_with_timeout(remaining_ms)) break;
+        if (!WIFSTOPPED(wstatus)) break;
+
+        int sig = WSTOPSIG(wstatus);
+        if (sig != SIGTRAP) {
+            ptrace(PTRACE_CONT, impl_->pid, nullptr,
+                   reinterpret_cast<void*>(static_cast<uintptr_t>(sig)));
+            need_cont = false;
+            continue;
         }
 
-        StackEvent ev;
-        ev.timestamp_ns = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count());
-        ev.func_name = func_name;
+        NativeRegs regs = get_regs(impl_->pid);
+        uint64_t hit_addr = get_ip(regs) - PC_ADJUST_AFTER_TRAP;
 
-        // Read registers via platform-abstracted get_regs()
-        try {
-            NativeRegs regs = get_regs(impl_->pid);
+        if (!waiting_for_exit && hit_addr == entry_vaddr) {
+            // --- Entry breakpoint fired ---
+            // Restore the original instruction and rewind PC.
+            restore_word(impl_->pid, entry_vaddr, orig_entry);
+            entry_armed = false;
+            set_ip(regs, entry_vaddr);
+            set_regs(impl_->pid, regs);
+
+            // Walk the call stack.
+            // At entry (before prologue): RSP → return addr, RBP = caller's frame.
+            StackEvent ev;
+            ev.func_name = func_name;
+            ev.timestamp_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+
+            ev.frames.push_back(func_name);
+
+            uint64_t rsp = get_sp(regs);
             uint64_t rbp = get_fp(regs);
-            uint64_t rip = get_ip(regs);
 
-            auto sym_for = [&](uint64_t runtime_addr) -> std::string {
-                uint64_t link_addr = (runtime_addr >= aslr_slide)
-                                     ? (runtime_addr - aslr_slide) : runtime_addr;
-                auto sym = finder.lookup_by_addr(link_addr);
-                if (sym) return *sym;
-                char buf[32];
-                snprintf(buf, sizeof(buf), "0x%016lx", runtime_addr);
-                return buf;
-            };
-
-            ev.frames.push_back(sym_for(rip));
-
-            // Walk up to 16 frames via frame-pointer chain
-            for (int i = 0; i < 16 && rbp != 0; ++i) {
-                if (rbp % 8 != 0) break;  // alignment guard
-
-                auto saved_rbp = read_word(rbp);
-                auto ret_addr  = read_word(rbp + 8);
-                if (!ret_addr || *ret_addr == 0) break;
-
-                ev.frames.push_back(sym_for(*ret_addr));
-
-                if (!saved_rbp || *saved_rbp == 0 || *saved_rbp <= rbp) break;
-                rbp = *saved_rbp;
+            if (auto ra = peek_word(rsp)) {
+                ev.frames.push_back(sym_for(*ra));   // direct caller
+                for (int i = 0; i < 14 && rbp && rbp % 8 == 0; ++i) {
+                    auto saved = peek_word(rbp);
+                    auto ret   = peek_word(rbp + 8);
+                    if (!ret || *ret == 0) break;
+                    ev.frames.push_back(sym_for(*ret));
+                    if (!saved || *saved == 0 || *saved <= rbp) break;
+                    rbp = *saved;
+                }
             }
-        } catch (...) {
-            ev.frames.push_back("stack capture unavailable");
-        }
 
-        ptrace(PTRACE_DETACH, impl_->pid, nullptr, nullptr);
+            results.push_back(std::move(ev));
 
-        results.push_back(std::move(ev));
-        collected++;
-
-        // Brief wait before next sample
-        if (collected < count) {
-            auto remaining_ms = static_cast<long long>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    deadline - std::chrono::steady_clock::now()).count());
-            if (remaining_ms > 0) {
-                long long sleep_ms_ll = std::min(remaining_ms / 2, (long long)50);
-                int sleep_ms = static_cast<int>(sleep_ms_ll);
-                if (sleep_ms > 0)
-                    usleep(sleep_ms * 1000);
+            if (static_cast<int>(results.size()) >= count) {
+                // Have all samples — no need to re-arm; function will run freely.
+                break;
             }
+
+            // Need more samples: install return-address breakpoint so we can
+            // re-arm the entry breakpoint after this call completes.
+            if (auto ra = peek_word(rsp)) {
+                ret_vaddr = *ra;
+                orig_ret  = insert_breakpoint(impl_->pid, ret_vaddr);
+                waiting_for_exit = true;
+            } else {
+                // Cannot read return address — re-arm entry immediately (best effort).
+                orig_entry  = insert_breakpoint(impl_->pid, entry_vaddr);
+                entry_armed = true;
+            }
+
+        } else if (waiting_for_exit && hit_addr == ret_vaddr) {
+            // --- Return-address breakpoint fired: restore and re-arm entry ---
+            restore_word(impl_->pid, ret_vaddr, orig_ret);
+            set_ip(regs, ret_vaddr);
+            set_regs(impl_->pid, regs);
+            waiting_for_exit = false;
+
+            orig_entry  = insert_breakpoint(impl_->pid, entry_vaddr);
+            entry_armed = true;
+            guard.orig_entry_ref = orig_entry;  // keep guard in sync
         }
+        // else: unexpected SIGTRAP (another thread, library) — ignore and continue
     }
 
+    guard.active = false;
+    if (waiting_for_exit && ret_vaddr)
+        restore_word(impl_->pid, ret_vaddr, orig_ret);
+    if (entry_armed)
+        restore_word(impl_->pid, entry_vaddr, orig_entry);
+    ptrace(PTRACE_DETACH, impl_->pid, nullptr, nullptr);
     return results;
 }
 
