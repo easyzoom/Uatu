@@ -43,3 +43,4 @@ compile_commands.json
 # Test output
 Testing/
 *.log
+docs/superpowers/

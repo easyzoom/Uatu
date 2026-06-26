@@ -74,6 +74,16 @@ sudo apt install \
 
 ### Build
 
+> **Ubuntu 22.04 + kernel ≥ 6.x 用户：** 系统 libbpf (0.5.0) 与新内核 BTF 不兼容，需先编译 vendored libbpf v1.4.3：
+> ```bash
+> cd third_party/libbpf/src
+> make BUILD_STATIC_ONLY=1 OBJDIR=$(pwd)/../../../build/libbpf
+> make BUILD_STATIC_ONLY=1 OBJDIR=$(pwd)/../../../build/libbpf \
+>      DESTDIR=$(pwd)/../../../build/libbpf PREFIX="" install
+> cd ../../..
+> ```
+> CMake 会自动检测并优先使用它，系统 libbpf 作为 fallback。
+
 ```bash
 git clone https://github.com/YOUR_ORG/uatu
 cd uatu
