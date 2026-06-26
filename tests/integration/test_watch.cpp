@@ -31,6 +31,31 @@ TEST(WatchDebug, CapturesReturnValue) {
     EXPECT_GT(events[0].duration_ns, 0u);
 }
 
+TEST(WatchDebug, CapturesParams) {
+    FixtureProcess proc(FIXTURE_DEBUG);
+    ASSERT_GT(proc.pid, 0);
+
+    uatu::AttachEngine engine(proc.pid);
+    // Calculator::add(int a, int b) is called with (1, 2)
+    auto result = engine.watch_checked("fixtures::Calculator::add",
+                                       /*max_events=*/1, /*timeout_ms=*/3000);
+    if (!result) {
+        if (result.error().message.find("eBPF") != std::string::npos ||
+            result.error().message.find("CAP_BPF") != std::string::npos ||
+            result.error().message.find("bpf_object") != std::string::npos) {
+            GTEST_SKIP() << "eBPF unavailable: " << result.error().message;
+        }
+        FAIL() << "watch_checked failed: " << result.error().message;
+    }
+
+    const auto& events = *result;
+    ASSERT_GE(events.size(), 1u);
+    // Must have captured exactly 2 params (a and b)
+    ASSERT_EQ(events[0].params.size(), 2u);
+    EXPECT_EQ(events[0].params[0], "1");
+    EXPECT_EQ(events[0].params[1], "2");
+}
+
 TEST(WatchStrip, ReturnsNoDwarfError) {
     FixtureProcess proc(FIXTURE_STRIP);
     ASSERT_GT(proc.pid, 0);

@@ -12,6 +12,7 @@ struct FuncInfo {
     uint64_t    size{0};        // high_pc - low_pc (0 = unknown)
     std::vector<std::string> param_types;
     std::string return_type;
+    bool        has_this{false}; // true for non-static member functions (this occupies args[0])
 };
 
 struct WatchEvent {

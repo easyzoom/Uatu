@@ -14,10 +14,12 @@
 #include <ctime>
 #include <fstream>
 #include <sstream>
+#include <array>
 #include <elf.h>
 #include <fcntl.h>
 #include <map>
 #include <optional>
+#include <unordered_map>
 
 namespace uatu {
 
@@ -33,10 +35,91 @@ std::string resolve_exe(int pid) {
     return buf;
 }
 
-std::string format_int_val(uint64_t v, const std::string& type_name) {
-    if (type_name == "int" || type_name == "long")
+// Strip leading const/volatile qualifiers for type classification.
+static std::string strip_cv(const std::string& t) {
+    std::string s = t;
+    for (;;) {
+        if (s.size() >= 6 && s.substr(0, 6) == "const ")    { s = s.substr(6); continue; }
+        if (s.size() >= 9 && s.substr(0, 9) == "volatile ") { s = s.substr(9); continue; }
+        break;
+    }
+    return s;
+}
+
+// Returns true for types passed in XMM registers (not captured by our BPF program).
+static bool is_fp_param(const std::string& type) {
+    const std::string s = strip_cv(type);
+    return s == "float" || s == "double" || s == "long double";
+}
+
+// Format a single 64-bit register value according to its DWARF type name.
+static std::string format_param_val(uint64_t v, const std::string& type) {
+    const std::string s = strip_cv(type);
+
+    if (s == "bool" || s == "_Bool")
+        return v ? "true" : "false";
+
+    // Signed integer types
+    if (s == "int"   || s == "signed"     || s == "signed int")
+        return std::to_string(static_cast<int32_t>(static_cast<uint32_t>(v)));
+    if (s == "short" || s == "short int"  || s == "signed short" || s == "signed short int")
+        return std::to_string(static_cast<int16_t>(static_cast<uint16_t>(v)));
+    if (s == "char"  || s == "signed char")
+        return std::to_string(static_cast<int8_t>(static_cast<uint8_t>(v)));
+    if (s == "long"       || s == "long int"       ||
+        s == "signed long"|| s == "signed long int" ||
+        s == "long long"  || s == "long long int")
         return std::to_string(static_cast<int64_t>(v));
+
+    // Pointer types: show as hex; char* gets a string hint
+    if (!s.empty() && s.back() == '*') {
+        if (v == 0) return "nullptr";
+        std::ostringstream oss;
+        if (s.find("char") != std::string::npos)
+            oss << "\"<0x" << std::hex << v << ">\"";
+        else
+            oss << "0x" << std::hex << v;
+        return oss.str();
+    }
+
+    // Reference types
+    if (!s.empty() && s.back() == '&') {
+        std::ostringstream oss;
+        oss << "&0x" << std::hex << v;
+        return oss.str();
+    }
+
+    // Default: unsigned decimal
     return std::to_string(v);
+}
+
+// Apply the x86_64 SysV ABI to produce formatted param strings.
+// Integer/pointer args use RDI/RSI/RDX/RCX/R8/R9 (args[0..5]).
+// Floating-point args use XMM0..7 — not captured; shown as "<xmmN>".
+static std::vector<std::string> format_params(
+        const std::vector<std::string>& param_types,
+        const uint64_t args[6],
+        bool has_this) {
+    std::vector<std::string> result;
+    result.reserve(param_types.size());
+    // Member functions pass 'this' in args[0] even though it's not in param_types;
+    // skip that slot so explicit params map to the correct registers.
+    int int_reg = has_this ? 1 : 0;
+    int fp_reg  = 0;
+    for (const auto& t : param_types) {
+        if (is_fp_param(t)) {
+            result.push_back("<xmm" + std::to_string(fp_reg++) + ">");
+        } else if (int_reg < 6) {
+            result.push_back(format_param_val(args[int_reg++], t));
+        } else {
+            result.push_back("?");  // stack-passed args not captured
+        }
+    }
+    return result;
+}
+
+std::string format_int_val(uint64_t v, const std::string& type_name) {
+    return format_param_val(v, type_name);
 }
 
 #ifndef BPF_OBJ_PATH
@@ -128,6 +211,9 @@ AttachEngine::watch_checked(const std::string& func_name,
     // eBPF path: any exception (e.g. no CAP_BPF) degrades gracefully to ptrace.
     std::vector<WatchEvent> events;
     events.reserve(max_events);
+    // Cache entry-event args by TID: the BPF program clears args[] in exit events,
+    // so we must save them when the entry event arrives and look them up on exit.
+    std::unordered_map<uint32_t, std::array<uint64_t, 6>> entry_args;
     try {
         ebpf::UprobeLoader loader(impl_->pid, BPF_OBJ_PATH);
         loader.attach(info.address);
@@ -142,7 +228,13 @@ AttachEngine::watch_checked(const std::string& func_name,
                 std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
 
             loader.poll(remaining, [&](const ebpf::RawEvent& raw) {
-                if (!raw.is_exit) return;
+                if (!raw.is_exit) {
+                    // Entry event: save args[0..5] keyed by TID for later.
+                    std::array<uint64_t, 6> a;
+                    std::copy(std::begin(raw.args), std::end(raw.args), a.begin());
+                    entry_args[raw.tid] = a;
+                    return;
+                }
                 if (static_cast<int>(events.size()) >= max_events) return;
 
                 WatchEvent ev;
@@ -150,6 +242,14 @@ AttachEngine::watch_checked(const std::string& func_name,
                 ev.duration_ns  = raw.duration_ns;
                 ev.func_name    = func_name;
                 ev.ret_value    = format_int_val(raw.ret_val, info.return_type);
+
+                auto it = entry_args.find(raw.tid);
+                if (it != entry_args.end()) {
+                    ev.params = format_params(info.param_types, it->second.data(),
+                                              info.has_this);
+                    entry_args.erase(it);
+                }
+
                 events.push_back(std::move(ev));
             });
         }

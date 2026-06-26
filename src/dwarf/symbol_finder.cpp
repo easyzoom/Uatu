@@ -184,12 +184,12 @@ struct SymbolFinder::Impl {
             do {
                 if (dwarf_tag(&param) != DW_TAG_formal_parameter) continue;
 
-                // Skip the implicit 'this' parameter.
+                // Skip the implicit 'this' parameter, but remember it occupied args[0].
                 Dwarf_Attribute art_attr;
                 if (dwarf_attr(&param, DW_AT_artificial, &art_attr)) {
                     bool artificial = false;
                     dwarf_formflag(&art_attr, &artificial);
-                    if (artificial) continue;
+                    if (artificial) { info.has_this = true; continue; }
                 }
 
                 // Resolve type reference.
