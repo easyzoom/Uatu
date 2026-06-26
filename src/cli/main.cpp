@@ -25,13 +25,19 @@ static void list_processes() {
 int main(int argc, char** argv) {
     int pid = -1;
 
-    for (int i = 1; i < argc - 1; ++i) {
-        if (std::string(argv[i]) == "--pid")
-            pid = std::stoi(argv[i + 1]);
+    for (int i = 1; i < argc; ++i) {
+        std::string arg(argv[i]);
+        if (arg == "--version" || arg == "-v") {
+            std::cout << "uatu " << UATU_VERSION << "\n";
+            return 0;
+        }
+        if (arg == "--pid" && i + 1 < argc)
+            pid = std::stoi(argv[++i]);
     }
 
     if (pid < 0) {
-        std::cout << "Usage: uatu --pid <PID>\n\n";
+        std::cout << "uatu " << UATU_VERSION << "\n"
+                  << "Usage: uatu --pid <PID>\n\n";
         std::cout << "Running processes:\n" << std::flush;
         list_processes();
         return 1;
