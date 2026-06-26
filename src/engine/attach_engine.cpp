@@ -45,9 +45,37 @@ std::string format_int_val(uint64_t v, const std::string& type_name) {
 
 } // namespace
 
+// Forward declarations for file-scope helpers used by Impl::get_aslr_slide().
+static uint64_t elf_min_vaddr(const std::string& path);
+static uint64_t get_load_base(int pid, const std::string& exe_path);
+
 struct AttachEngine::Impl {
     int         pid;
     std::string exe_path;
+
+    // Lazily-initialised caches — valid for the lifetime of the engine.
+    std::unique_ptr<dwarf::SymbolFinder> finder_;
+    std::optional<uint64_t>              cached_elf_min_vaddr_;
+    std::optional<uint64_t>              cached_maps_base_;
+
+    // Returns the shared SymbolFinder, constructing it on first call.
+    // Throws if the binary has no DWARF info (stripped).
+    dwarf::SymbolFinder& get_finder() {
+        if (!finder_)
+            finder_ = std::make_unique<dwarf::SymbolFinder>(exe_path);
+        return *finder_;
+    }
+
+    // Returns (maps_base - elf_min_vaddr): the ASLR slide to add to DWARF
+    // link-time addresses to get runtime addresses.  Both components are
+    // cached after the first call.
+    uint64_t get_aslr_slide() {
+        if (!cached_elf_min_vaddr_)
+            cached_elf_min_vaddr_ = elf_min_vaddr(exe_path);
+        if (!cached_maps_base_)
+            cached_maps_base_ = get_load_base(pid, exe_path);
+        return *cached_maps_base_ - *cached_elf_min_vaddr_;
+    }
 };
 
 AttachEngine::AttachEngine(int pid)
@@ -64,13 +92,12 @@ AttachEngine::watch_checked(const std::string& func_name,
     // Step 1: DWARF lookup — must succeed before touching BPF
     FuncInfo info;
     try {
-        dwarf::SymbolFinder finder(impl_->exe_path);
-        auto opt = finder.find(func_name);
+        auto opt = impl_->get_finder().find(func_name);
         if (!opt)
             return tl::unexpected(EngineError{"function not found in DWARF: " + func_name});
         info = *opt;
     } catch (const std::exception& ex) {
-        // SymbolFinder throws "no DWARF debug info in: ..." for stripped binaries
+        // get_finder() throws "no DWARF debug info in: ..." for stripped binaries
         std::string msg = ex.what();
         if (msg.find("DWARF") == std::string::npos)
             msg = "no DWARF debug info: " + msg;
@@ -88,14 +115,12 @@ AttachEngine::watch_checked(const std::string& func_name,
     bool ebpf_available = (access(BPF_OBJ_PATH, R_OK) == 0);
 
     if (!ebpf_available) {
-        // ptrace fallback：使用 trace() 采集单次调用的返回值
-        // （eBPF 未编译时的降级路径，功能受限但不崩溃）
         auto trace_nodes = trace(func_name, max_events, timeout_ms);
         for (auto& node : trace_nodes) {
             WatchEvent ev;
             ev.func_name   = node.func_name;
             ev.duration_ns = node.duration_ns;
-            ev.ret_value   = "(ptrace mode — compile clang to enable eBPF for full watch)";
+            ev.ret_value   = format_int_val(node.ret_raw, info.return_type);
             events.push_back(std::move(ev));
         }
         return events;
@@ -225,10 +250,13 @@ static uint64_t ptrace_read8(pid_t pid, uint64_t addr) {
     return static_cast<uint64_t>(val);
 }
 
-// Write 8 bytes to target at addr via PTRACE_POKEDATA
+// Write 8 bytes to target at addr via PTRACE_POKEDATA.
+// Throws on failure so callers don't silently corrupt breakpoint state.
 static void ptrace_write8(pid_t pid, uint64_t addr, uint64_t val) {
-    ptrace(PTRACE_POKEDATA, pid, reinterpret_cast<void*>(addr),
-           reinterpret_cast<void*>(val));
+    if (ptrace(PTRACE_POKEDATA, pid, reinterpret_cast<void*>(addr),
+               reinterpret_cast<void*>(val)) < 0)
+        throw std::runtime_error("PTRACE_POKEDATA failed at addr 0x" +
+                                 [addr]{ std::ostringstream s; s << std::hex << addr; return s.str(); }());
 }
 
 // Insert a software breakpoint at addr; returns the original 8-byte word.
@@ -261,21 +289,16 @@ static bool waitpid_timeout(pid_t pid, int& wstatus, int timeout_ms) {
 
 std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
                                            int count, int timeout_ms) {
-    // 1. DWARF lookup
-    dwarf::SymbolFinder finder(impl_->exe_path);
-    auto opt = finder.find(func_name);
+    // 1. DWARF lookup (SymbolFinder is cached in Impl after first call)
+    auto opt = impl_->get_finder().find(func_name);
     if (!opt)
         throw std::runtime_error("trace: function not found in DWARF: " + func_name);
     const FuncInfo& info = *opt;
     if (info.address == 0)
         throw std::runtime_error("trace: function has no address (inlined?): " + func_name);
 
-    // 2. Compute ASLR slide: slide = maps_base - elf_link_base.
-    //    PIE:     elf_link_base ≈ 0   → slide = ASLR base.
-    //    non-PIE: elf_link_base = maps_base → slide = 0 (addresses already absolute).
-    uint64_t maps_base   = get_load_base(impl_->pid, impl_->exe_path);
-    uint64_t aslr_slide  = maps_base - elf_min_vaddr(impl_->exe_path);
-    uint64_t entry_vaddr = info.address + aslr_slide;
+    // 2. Compute runtime address using cached ASLR slide.
+    uint64_t entry_vaddr = info.address + impl_->get_aslr_slide();
 
     // 3. Attach
     if (ptrace(PTRACE_ATTACH, impl_->pid, nullptr, nullptr) < 0)
@@ -393,6 +416,7 @@ std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
             TraceNode node;
             node.func_name   = func_name;
             node.duration_ns = exit_ts - entry_ts;
+            node.ret_raw     = get_ret(regs);
             results.push_back(std::move(node));
 
             // Restore return-address bytes and rewind PC
@@ -432,13 +456,12 @@ std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
 std::vector<StackEvent> AttachEngine::stack(const std::string& func_name,
                                              int count, int timeout_ms) {
     // Verify the function exists in DWARF
-    dwarf::SymbolFinder finder(impl_->exe_path);
-    auto opt = finder.find(func_name);
+    auto& finder    = impl_->get_finder();
+    auto  opt       = finder.find(func_name);
     if (!opt)
         throw std::runtime_error("stack: function not found in DWARF: " + func_name);
 
-    uint64_t maps_base  = get_load_base(impl_->pid, impl_->exe_path);
-    uint64_t aslr_slide = maps_base - elf_min_vaddr(impl_->exe_path);
+    uint64_t aslr_slide = impl_->get_aslr_slide();
 
     std::vector<StackEvent> results;
     results.reserve(count);

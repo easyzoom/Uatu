@@ -26,6 +26,7 @@ struct WatchEvent {
 struct TraceNode {
     std::string func_name;
     uint64_t    duration_ns{0};
+    uint64_t    ret_raw{0};            // raw return-register value at function exit
     std::vector<TraceNode> children;
 };
 

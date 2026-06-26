@@ -93,6 +93,8 @@ else()
     set(UATU_EBPF_AVAILABLE FALSE CACHE BOOL "eBPF support available" FORCE)
 endif()
 
+enable_testing()
+
 add_subdirectory(src)
 add_subdirectory(tests)
 add_subdirectory(examples)

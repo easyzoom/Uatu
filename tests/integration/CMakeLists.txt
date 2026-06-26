@@ -35,3 +35,8 @@ target_link_libraries(test_stack PRIVATE
 target_compile_definitions(test_stack PRIVATE
     FIXTURE_DIR="${CMAKE_BINARY_DIR}/tests/fixtures"
 )
+
+add_test(NAME integration_trace COMMAND test_trace)
+add_test(NAME integration_stack COMMAND test_stack)
+# integration_watch requires CAP_BPF; SKIPS gracefully when unavailable
+add_test(NAME integration_watch COMMAND test_watch)

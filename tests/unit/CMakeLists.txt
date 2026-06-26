@@ -21,3 +21,6 @@ target_link_libraries(test_json_codec PRIVATE
     GTest::gtest
     GTest::gtest_main
 )
+
+add_test(NAME unit_symbol_finder COMMAND test_symbol_finder)
+add_test(NAME unit_json_codec    COMMAND test_json_codec)

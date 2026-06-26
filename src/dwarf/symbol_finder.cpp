@@ -4,9 +4,11 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cxxabi.h>
+#include <map>
 #include <mutex>
 #include <regex>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 #include <string>
 
@@ -15,8 +17,10 @@ namespace uatu::dwarf {
 struct SymbolFinder::Impl {
     int    fd{-1};
     Dwarf* dw{nullptr};
-    mutable std::vector<FuncInfo> cache_;
-    mutable std::once_flag         cache_flag_;
+    mutable std::vector<FuncInfo>                    cache_;
+    mutable std::once_flag                           cache_flag_;
+    mutable std::unordered_map<std::string, std::size_t> idx_by_name_;
+    mutable std::map<uint64_t, std::size_t>              idx_by_addr_;
 
     // Demangle a mangled C++ name; return as-is if demangling fails.
     std::string demangle(const char* mangled) const {
@@ -82,6 +86,13 @@ struct SymbolFinder::Impl {
                     collect_subprograms(&cudie);
                 }
                 off = next_off;
+            }
+            // Build O(1)/O(log n) lookup indexes from the populated cache.
+            // try_emplace keeps the first occurrence for duplicate names/addresses.
+            for (std::size_t i = 0; i < cache_.size(); ++i) {
+                idx_by_name_.try_emplace(cache_[i].name, i);
+                if (cache_[i].address != 0)
+                    idx_by_addr_.try_emplace(cache_[i].address, i);
             }
         });
         return cache_;
@@ -218,9 +229,10 @@ SymbolFinder::~SymbolFinder() {
 }
 
 std::optional<FuncInfo> SymbolFinder::find(const std::string& name) const {
-    for (auto& info : impl_->all())
-        if (info.name == name) return info;
-    return std::nullopt;
+    impl_->all();  // populate cache and indexes
+    auto it = impl_->idx_by_name_.find(name);
+    if (it == impl_->idx_by_name_.end()) return std::nullopt;
+    return impl_->cache_[it->second];
 }
 
 std::vector<FuncInfo> SymbolFinder::find_regex(const std::string& pattern) const {
@@ -232,14 +244,16 @@ std::vector<FuncInfo> SymbolFinder::find_regex(const std::string& pattern) const
 }
 
 std::optional<std::string> SymbolFinder::lookup_by_addr(uint64_t addr) const {
-    // Range-based lookup: addr may be anywhere inside the function body
-    // (return addresses point after the call instruction, not at entry point).
-    for (auto& info : impl_->all()) {
-        if (info.address == 0) continue;
-        if (addr == info.address) return info.name;
-        if (info.size > 0 && addr >= info.address && addr < info.address + info.size)
-            return info.name;
-    }
+    impl_->all();  // populate cache and indexes
+    if (impl_->idx_by_addr_.empty()) return std::nullopt;
+    // upper_bound gives first entry with start > addr; step back to find
+    // the candidate whose start <= addr, then verify addr is in [start, start+size).
+    auto it = impl_->idx_by_addr_.upper_bound(addr);
+    if (it == impl_->idx_by_addr_.begin()) return std::nullopt;
+    --it;
+    const FuncInfo& fi = impl_->cache_[it->second];
+    if (fi.address == addr) return fi.name;
+    if (fi.size > 0 && addr < fi.address + fi.size) return fi.name;
     return std::nullopt;
 }
 
