@@ -1,0 +1,297 @@
+name: Release
+
+# Triggers:
+#   1. Push a semver tag (vX.Y.Z) → automated release
+#   2. workflow_dispatch          → manual release with explicit version input
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version tag (e.g. v1.2.0)'
+        required: true
+
+env:
+  CMAKE_BUILD_TYPE: Release
+
+# ─────────────────────────────────────────────────────────────
+# Resolve the version string once and share it across jobs.
+# For a tag push: github.ref_name = "v1.2.0"
+# For a manual run: inputs.version (caller-supplied)
+# ─────────────────────────────────────────────────────────────
+jobs:
+
+  # ───────────────────────────────────────────────────────────
+  # Job 1 · Unit + integration tests (x86_64, ptrace mode)
+  #
+  # eBPF tests (WatchDebug) run through the ptrace fallback path:
+  # CAP_BPF is unavailable in standard GitHub-hosted runners,
+  # so watch_checked() degrades automatically and the test still
+  # passes. Full eBPF verification requires a privileged
+  # environment (see docs/docker.md).
+  # ───────────────────────────────────────────────────────────
+  test:
+    name: Test (x86_64 · ptrace)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build \
+            libdw-dev libelf-dev zlib1g-dev \
+            libgtest-dev
+
+      - name: Build vendored libbpf
+        run: |
+          make -C third_party/libbpf/src \
+            BUILD_STATIC_ONLY=1 \
+            OBJDIR=${{ github.workspace }}/build/libbpf
+          make -C third_party/libbpf/src \
+            BUILD_STATIC_ONLY=1 \
+            OBJDIR=${{ github.workspace }}/build/libbpf \
+            DESTDIR=${{ github.workspace }}/build/libbpf \
+            PREFIX="" install
+
+      - name: Configure (no clang/bpftool → eBPF skeletons not generated)
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Unit tests
+        run: |
+          build/tests/unit/test_symbol_finder
+          build/tests/unit/test_json_codec
+
+      - name: Integration tests
+        run: |
+          build/tests/integration/test_trace
+          build/tests/integration/test_stack
+          # WatchDebug uses ptrace fallback (no CAP_BPF); still validates
+          # the full watch_checked() code path including DWARF lookup.
+          build/tests/integration/test_watch
+
+  # ───────────────────────────────────────────────────────────
+  # Job 2 · Build release binaries (3 architectures)
+  #
+  # ptrace-only: no clang/bpftool required in CI.
+  # eBPF support is available to end-users who build from source
+  # with a complete toolchain installed.
+  # ───────────────────────────────────────────────────────────
+  build:
+    name: Build · ${{ matrix.arch }}
+    runs-on: ubuntu-22.04
+    needs: test
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── native x86_64 ─────────────────────────────────
+          - arch: x86_64
+            cross_triple: ""
+            deb_arch: ""
+            toolchain_flag: ""
+
+          # ── cross → aarch64 ───────────────────────────────
+          - arch: aarch64
+            cross_triple: aarch64-linux-gnu
+            deb_arch: arm64
+            toolchain_flag: >-
+              -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/aarch64-linux-gnu.cmake
+
+          # ── cross → riscv64 ───────────────────────────────
+          - arch: riscv64
+            cross_triple: riscv64-linux-gnu
+            deb_arch: riscv64
+            toolchain_flag: >-
+              -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/riscv64-linux-gnu.cmake
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Common build tools ──────────────────────────────────
+      - name: Install common build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      # ── Native deps (x86_64) ───────────────────────────────
+      - name: Install native libraries (x86_64)
+        if: matrix.arch == 'x86_64'
+        run: |
+          sudo apt-get install -y libdw-dev libelf-dev zlib1g-dev
+
+      # ── Cross deps (aarch64) ───────────────────────────────
+      - name: Install cross-compiler and libraries (aarch64)
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo dpkg --add-architecture arm64
+          # Restrict default sources to amd64 so apt doesn't mix arches
+          sudo sed -i 's/^deb /deb [arch=amd64,i386] /g' /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe" \
+            | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdw-dev:arm64 libelf-dev:arm64 zlib1g-dev:arm64
+
+      # ── Cross deps (riscv64) ───────────────────────────────
+      - name: Install cross-compiler and libraries (riscv64)
+        if: matrix.arch == 'riscv64'
+        run: |
+          sudo apt-get install -y \
+            gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+          sudo dpkg --add-architecture riscv64
+          sudo sed -i 's/^deb /deb [arch=amd64,i386] /g' /etc/apt/sources.list
+          echo "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe" \
+            | sudo tee /etc/apt/sources.list.d/riscv64-ports.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdw-dev:riscv64 libelf-dev:riscv64 zlib1g-dev:riscv64
+
+      # ── Build vendored libbpf (with cross-compiler if needed) ──
+      - name: Build vendored libbpf
+        run: |
+          CROSS_ARG=""
+          if [ -n "${{ matrix.cross_triple }}" ]; then
+            CROSS_ARG="CROSS_COMPILE=${{ matrix.cross_triple }}-"
+          fi
+          make -C third_party/libbpf/src \
+            BUILD_STATIC_ONLY=1 \
+            OBJDIR=${{ github.workspace }}/build/libbpf \
+            $CROSS_ARG
+          make -C third_party/libbpf/src \
+            BUILD_STATIC_ONLY=1 \
+            OBJDIR=${{ github.workspace }}/build/libbpf \
+            DESTDIR=${{ github.workspace }}/build/libbpf \
+            PREFIX="" install \
+            $CROSS_ARG
+
+      # ── CMake configure + build ────────────────────────────
+      - name: Configure
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }} \
+            ${{ matrix.toolchain_flag }}
+
+      - name: Build uatu binary
+        run: cmake --build build -j$(nproc) --target uatu
+
+      - name: Smoke test (x86_64 only — others are cross-compiled)
+        if: matrix.arch == 'x86_64'
+        run: build/src/cli/uatu --version
+
+      - name: Strip binary
+        run: |
+          STRIP="${{ matrix.cross_triple != '' && format('{0}-strip', matrix.cross_triple) || 'strip' }}"
+          $STRIP build/src/cli/uatu
+
+      # ── Package ────────────────────────────────────────────
+      - name: Determine version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create tarball
+        run: |
+          VERSION=${{ steps.ver.outputs.version }}
+          TARBALL="uatu-${VERSION}-linux-${{ matrix.arch }}.tar.gz"
+          tar -czf "$TARBALL" \
+            -C build/src/cli uatu \
+            --transform "s|^uatu|uatu-${VERSION}-linux-${{ matrix.arch }}/uatu|"
+          echo "TARBALL=$TARBALL" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uatu-linux-${{ matrix.arch }}
+          path: ${{ env.TARBALL }}
+          retention-days: 1
+
+  # ───────────────────────────────────────────────────────────
+  # Job 3 · Create GitHub Release
+  # ───────────────────────────────────────────────────────────
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-22.04
+    needs: build
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: ${{ steps.ver.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(steps.ver.outputs.version, '-') }}
+          body: |
+            ## uatu ${{ steps.ver.outputs.version }}
+
+            Zero-intrusion C++ runtime diagnostics for Linux — attach to any running process without modifying code or restarting.
+
+            ### Pre-built binaries (ptrace mode)
+
+            | Platform | File |
+            |---|---|
+            | Linux x86\_64 | `uatu-${{ steps.ver.outputs.version }}-linux-x86_64.tar.gz` |
+            | Linux aarch64 | `uatu-${{ steps.ver.outputs.version }}-linux-aarch64.tar.gz` |
+            | Linux riscv64 | `uatu-${{ steps.ver.outputs.version }}-linux-riscv64.tar.gz` |
+
+            **Quick start:**
+            ```bash
+            tar -xzf uatu-${{ steps.ver.outputs.version }}-linux-x86_64.tar.gz
+            ./uatu --pid <PID>
+            ```
+
+            ### eBPF mode
+
+            The pre-built binaries use **ptrace mode** (no root required).
+            For zero-overhead eBPF observation, build from source with `clang` and `bpftool`:
+
+            ```bash
+            cmake -B build -S . && cmake --build build
+            sudo ./build/src/cli/uatu --pid <PID>
+            ```
+
+            See [docs/install.md](docs/install.md) for full instructions.
+
+            ### Test coverage
+
+            All unit and integration tests pass on x86\_64.
+            eBPF-specific tests (`WatchDebug`) run via ptrace fallback in CI;
+            full eBPF path is validated separately in a privileged Docker environment.
+          files: dist/*
