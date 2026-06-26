@@ -12,8 +12,19 @@ TEST(WatchDebug, CapturesReturnValue) {
     ASSERT_GT(proc.pid, 0);
 
     uatu::AttachEngine engine(proc.pid);
-    auto events = engine.watch("fixtures::Calculator::add",
-                               /*max_events=*/2, /*timeout_ms=*/3000);
+    auto result = engine.watch_checked("fixtures::Calculator::add",
+                                       /*max_events=*/2, /*timeout_ms=*/3000);
+    if (!result) {
+        // eBPF requires CAP_BPF; skip gracefully when running without root.
+        if (result.error().message.find("eBPF") != std::string::npos ||
+            result.error().message.find("CAP_BPF") != std::string::npos ||
+            result.error().message.find("bpf_object") != std::string::npos) {
+            GTEST_SKIP() << "eBPF unavailable: " << result.error().message;
+        }
+        FAIL() << "watch_checked failed: " << result.error().message;
+    }
+
+    const auto& events = *result;
     ASSERT_GE(events.size(), 1u);
     EXPECT_EQ(events[0].func_name, "fixtures::Calculator::add");
     EXPECT_EQ(events[0].ret_value, "3");

@@ -14,6 +14,8 @@
 #include <ctime>
 #include <fstream>
 #include <sstream>
+#include <elf.h>
+#include <fcntl.h>
 #include <map>
 #include <optional>
 
@@ -99,33 +101,39 @@ AttachEngine::watch_checked(const std::string& func_name,
         return events;
     }
 
-    ebpf::UprobeLoader loader(impl_->pid, BPF_OBJ_PATH);
-    loader.attach(info.address);
+    // eBPF section: any exception here (e.g. no CAP_BPF) becomes an EngineError
+    // so watch_checked() always honours its tl::expected contract.
+    try {
+        ebpf::UprobeLoader loader(impl_->pid, BPF_OBJ_PATH);
+        loader.attach(info.address);
 
-    auto deadline = std::chrono::steady_clock::now() +
-                    std::chrono::milliseconds(timeout_ms);
+        auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeout_ms);
 
-    while (static_cast<int>(events.size()) < max_events) {
-        auto now       = std::chrono::steady_clock::now();
-        if (now >= deadline) break;
-        int remaining = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+        while (static_cast<int>(events.size()) < max_events) {
+            auto now       = std::chrono::steady_clock::now();
+            if (now >= deadline) break;
+            int remaining = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
 
-        loader.poll(remaining, [&](const ebpf::RawEvent& raw) {
-            if (!raw.is_exit) return;
-            if (static_cast<int>(events.size()) >= max_events) return;
+            loader.poll(remaining, [&](const ebpf::RawEvent& raw) {
+                if (!raw.is_exit) return;
+                if (static_cast<int>(events.size()) >= max_events) return;
 
-            WatchEvent ev;
-            ev.timestamp_ns = raw.timestamp_ns;
-            ev.duration_ns  = raw.duration_ns;
-            ev.func_name    = func_name;
-            ev.ret_value    = format_int_val(raw.ret_val, info.return_type);
-            events.push_back(std::move(ev));
-        });
+                WatchEvent ev;
+                ev.timestamp_ns = raw.timestamp_ns;
+                ev.duration_ns  = raw.duration_ns;
+                ev.func_name    = func_name;
+                ev.ret_value    = format_int_val(raw.ret_val, info.return_type);
+                events.push_back(std::move(ev));
+            });
+        }
+
+        loader.detach_all();
+        return events;
+    } catch (const std::exception& ebpf_err) {
+        return tl::unexpected(EngineError{std::string("eBPF error: ") + ebpf_err.what()});
     }
-
-    loader.detach_all();
-    return events;
 }
 
 std::vector<WatchEvent> AttachEngine::watch(const std::string& func_name,
@@ -154,12 +162,36 @@ std::vector<WatchEvent> AttachEngine::watch(const std::string& func_name,
 //       file_load_bias is the lowest PT_LOAD p_vaddr (usually 0).
 // ---------------------------------------------------------------------------
 
-// Read the executable's load bias (lowest PT_LOAD vaddr) from the ELF header.
-static uint64_t elf_load_bias(const std::string& path) {
-    // Use /proc/<pid>/maps approach: find the mapping whose offset is 0
-    // and return its start address as the load bias.
-    // This is simpler than parsing ELF PT_LOAD directly.
-    return 0;  // computed per-process below via maps
+// Return the lowest PT_LOAD p_vaddr from the ELF file (the link-time base).
+// For PIE this is 0; for non-PIE it is the fixed load address (e.g. 0x400000).
+// Used together with get_load_base() to compute the true ASLR slide:
+//   slide = get_load_base(pid) - elf_min_vaddr(exe)
+//   runtime_addr = dwarf_addr + slide
+static uint64_t elf_min_vaddr(const std::string& path) {
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) return 0;
+
+    Elf64_Ehdr ehdr{};
+    if (pread(fd, &ehdr, sizeof(ehdr), 0) != static_cast<ssize_t>(sizeof(ehdr)) ||
+        memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0) {
+        close(fd);
+        return 0;
+    }
+
+    uint64_t min_vaddr = 0;
+    for (int i = 0; i < ehdr.e_phnum; ++i) {
+        Elf64_Phdr phdr{};
+        off_t off = static_cast<off_t>(ehdr.e_phoff) +
+                    static_cast<off_t>(i) * ehdr.e_phentsize;
+        if (pread(fd, &phdr, sizeof(phdr), off) != static_cast<ssize_t>(sizeof(phdr)))
+            break;
+        if (phdr.p_type == PT_LOAD && phdr.p_offset == 0) {
+            min_vaddr = phdr.p_vaddr;
+            break;
+        }
+    }
+    close(fd);
+    return min_vaddr;
 }
 
 // Return the runtime load address for our executable in the target process.
@@ -182,10 +214,15 @@ static uint64_t get_load_base(int pid, const std::string& exe_path) {
     return 0;
 }
 
-// Read 8 bytes from target at addr via PTRACE_PEEKDATA
+// Read 8 bytes from target at addr via PTRACE_PEEKDATA.
+// Throws on failure (errno check required: -1 is also a valid data value).
 static uint64_t ptrace_read8(pid_t pid, uint64_t addr) {
-    return static_cast<uint64_t>(
-        ptrace(PTRACE_PEEKDATA, pid, reinterpret_cast<void*>(addr), nullptr));
+    errno = 0;
+    long val = ptrace(PTRACE_PEEKDATA, pid, reinterpret_cast<void*>(addr), nullptr);
+    if (errno != 0)
+        throw std::runtime_error("PTRACE_PEEKDATA failed at addr 0x" +
+                                 [addr]{ std::ostringstream s; s << std::hex << addr; return s.str(); }());
+    return static_cast<uint64_t>(val);
 }
 
 // Write 8 bytes to target at addr via PTRACE_POKEDATA
@@ -207,6 +244,21 @@ static void restore_word(pid_t pid, uint64_t addr, uint64_t orig) {
     ptrace_write8(pid, addr, orig);
 }
 
+// waitpid with WNOHANG polling loop; writes result into wstatus.
+// Returns true on success, false on timeout or error.
+static bool waitpid_timeout(pid_t pid, int& wstatus, int timeout_ms) {
+    auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        int ws = 0;
+        int ret = waitpid(pid, &ws, WNOHANG);
+        if (ret > 0) { wstatus = ws; return true; }
+        if (ret < 0) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
+
 std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
                                            int count, int timeout_ms) {
     // 1. DWARF lookup
@@ -218,9 +270,12 @@ std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
     if (info.address == 0)
         throw std::runtime_error("trace: function has no address (inlined?): " + func_name);
 
-    // 2. Compute runtime address (ASLR for PIE binaries)
-    uint64_t load_base   = get_load_base(impl_->pid, impl_->exe_path);
-    uint64_t entry_vaddr = info.address + load_base;
+    // 2. Compute ASLR slide: slide = maps_base - elf_link_base.
+    //    PIE:     elf_link_base ≈ 0   → slide = ASLR base.
+    //    non-PIE: elf_link_base = maps_base → slide = 0 (addresses already absolute).
+    uint64_t maps_base   = get_load_base(impl_->pid, impl_->exe_path);
+    uint64_t aslr_slide  = maps_base - elf_min_vaddr(impl_->exe_path);
+    uint64_t entry_vaddr = info.address + aslr_slide;
 
     // 3. Attach
     if (ptrace(PTRACE_ATTACH, impl_->pid, nullptr, nullptr) < 0)
@@ -229,19 +284,8 @@ std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
 
     int wstatus = 0;
 
-    // Timeout-aware waitpid helper: polls with WNOHANG until stopped or timeout.
-    // Stores the status into wstatus on success.
-    auto wait_with_timeout = [&](int timeout_ms_inner) -> bool {
-        auto deadline_inner = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds(timeout_ms_inner);
-        int ws = 0;
-        while (std::chrono::steady_clock::now() < deadline_inner) {
-            int ret = waitpid(impl_->pid, &ws, WNOHANG);
-            if (ret > 0) { wstatus = ws; return true; }
-            if (ret < 0) return false;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        return false;
+    auto wait_with_timeout = [&](int ms) {
+        return waitpid_timeout(impl_->pid, wstatus, ms);
     };
 
     if (!wait_with_timeout(5000)) {
@@ -289,11 +333,17 @@ std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
                static_cast<uint64_t>(ts.tv_nsec);
     };
 
+    // need_cont tracks whether PTRACE_CONT must be called at the top of the next
+    // iteration. Set false when we already called PTRACE_CONT (e.g. signal forward)
+    // to avoid double-continuing a running tracee.
+    bool need_cont = true;
     while (static_cast<int>(results.size()) < count) {
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) break;
 
-        ptrace(PTRACE_CONT, impl_->pid, nullptr, nullptr);
+        if (need_cont)
+            ptrace(PTRACE_CONT, impl_->pid, nullptr, nullptr);
+        need_cont = true;
 
         // Wait for the process to stop (SIGTRAP or other), with timeout.
         // wait_with_timeout stores the result into wstatus.
@@ -306,9 +356,11 @@ std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
 
         int sig = WSTOPSIG(wstatus);
         if (sig != SIGTRAP) {
-            // Deliver non-SIGTRAP signals transparently
+            // Deliver non-SIGTRAP signals transparently; process is now running,
+            // so skip the PTRACE_CONT at the top of the next iteration.
             ptrace(PTRACE_CONT, impl_->pid, nullptr,
                    reinterpret_cast<void*>(static_cast<uintptr_t>(sig)));
+            need_cont = false;
             continue;
         }
 
@@ -385,9 +437,8 @@ std::vector<StackEvent> AttachEngine::stack(const std::string& func_name,
     if (!opt)
         throw std::runtime_error("stack: function not found in DWARF: " + func_name);
 
-    // ASLR 偏移：运行时地址 - DWARF 链接时地址 = load_base
-    // lookup_by_addr 需要链接时地址，所以每个运行时地址都要减 load_base
-    uint64_t load_base = get_load_base(impl_->pid, impl_->exe_path);
+    uint64_t maps_base  = get_load_base(impl_->pid, impl_->exe_path);
+    uint64_t aslr_slide = maps_base - elf_min_vaddr(impl_->exe_path);
 
     std::vector<StackEvent> results;
     results.reserve(count);
@@ -414,7 +465,9 @@ std::vector<StackEvent> AttachEngine::stack(const std::string& func_name,
             break;
 
         int wstatus = 0;
-        if (waitpid(impl_->pid, &wstatus, 0) < 0) {
+        int rem_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+        if (!waitpid_timeout(impl_->pid, wstatus, rem_ms)) {
             ptrace(PTRACE_DETACH, impl_->pid, nullptr, nullptr);
             break;
         }
@@ -431,10 +484,9 @@ std::vector<StackEvent> AttachEngine::stack(const std::string& func_name,
             uint64_t rbp = get_fp(regs);
             uint64_t rip = get_ip(regs);
 
-            // 运行时地址 → 链接时地址（减去 ASLR load_base）
             auto sym_for = [&](uint64_t runtime_addr) -> std::string {
-                uint64_t link_addr = (runtime_addr >= load_base)
-                                     ? (runtime_addr - load_base) : runtime_addr;
+                uint64_t link_addr = (runtime_addr >= aslr_slide)
+                                     ? (runtime_addr - aslr_slide) : runtime_addr;
                 auto sym = finder.lookup_by_addr(link_addr);
                 if (sym) return *sym;
                 char buf[32];

@@ -49,8 +49,8 @@
            throw std::runtime_error("PTRACE_GETREGSET failed");
        return r;
    }
-   inline void set_regs(pid_t pid, NativeRegs& r) {
-       struct iovec iov{ &r, sizeof(r) };
+   inline void set_regs(pid_t pid, const NativeRegs& r) {
+       struct iovec iov{ const_cast<NativeRegs*>(&r), sizeof(r) };
        if (ptrace(PTRACE_SETREGSET, pid, reinterpret_cast<void*>(NT_PRSTATUS), &iov) < 0)
            throw std::runtime_error("PTRACE_SETREGSET failed");
    }
@@ -81,8 +81,8 @@
            throw std::runtime_error("PTRACE_GETREGSET failed");
        return r;
    }
-   inline void set_regs(pid_t pid, NativeRegs& r) {
-       struct iovec iov{ &r, sizeof(r) };
+   inline void set_regs(pid_t pid, const NativeRegs& r) {
+       struct iovec iov{ const_cast<NativeRegs*>(&r), sizeof(r) };
        if (ptrace(PTRACE_SETREGSET, pid, reinterpret_cast<void*>(NT_PRSTATUS), &iov) < 0)
            throw std::runtime_error("PTRACE_SETREGSET failed");
    }
