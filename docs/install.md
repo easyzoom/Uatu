@@ -171,14 +171,24 @@ ctest --output-on-failure
 预期输出（全部通过）：
 
 ```
-Test project /home/user/uatu/build
-    Start 1: uatu_unit_tests
-1/2 Test #1: uatu_unit_tests ..........   Passed    0.12 sec
-    Start 2: uatu_integration_tests
-2/2 Test #2: uatu_integration_tests ....  Passed    2.34 sec
+Test project /path/to/uatu/build
+    Start 1: unit_symbol_finder
+1/5 Test #1: unit_symbol_finder ...........   Passed    0.01 sec
+    Start 2: unit_json_codec
+2/5 Test #2: unit_json_codec ..............   Passed    0.00 sec
+    Start 3: integration_trace
+3/5 Test #3: integration_trace ............   Passed    0.64 sec
+    Start 4: integration_stack
+4/5 Test #4: integration_stack ............   Passed    0.62 sec
+    Start 5: integration_watch
+5/5 Test #5: integration_watch ............   Passed    1.21 sec
 
-100% tests passed, 0 tests failed out of 2
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =   2.47 sec
 ```
+
+> `integration_watch` 需要 `CAP_BPF`；无权限时自动 SKIP（计入 Passed）。
 
 ### 快速冒烟测试
 

@@ -59,6 +59,15 @@ int processOrder(int orderId, double amount);
 ```bash
 git clone https://github.com/YOUR_ORG/uatu
 cd uatu
+
+# Ubuntu 22.04 + kernel ≥ 6.x：先编译 vendored libbpf v1.4.3
+# （系统 libbpf 0.5.0 与新内核 BTF 不兼容）
+cd third_party/libbpf/src
+make BUILD_STATIC_ONLY=1 OBJDIR=$(pwd)/../../../build/libbpf
+make BUILD_STATIC_ONLY=1 OBJDIR=$(pwd)/../../../build/libbpf \
+     DESTDIR=$(pwd)/../../../build/libbpf PREFIX="" install
+cd ../../..
+
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 sudo cmake --install build --prefix /usr/local
@@ -149,8 +158,13 @@ uatu> quit
 - name: Build uatu
   run: |
     git clone https://github.com/YOUR_ORG/uatu /tmp/uatu
-    cmake -B /tmp/uatu/build -S /tmp/uatu -DCMAKE_BUILD_TYPE=Release
-    cmake --build /tmp/uatu/build -j$(nproc)
+    cd /tmp/uatu/third_party/libbpf/src
+    make BUILD_STATIC_ONLY=1 OBJDIR=/tmp/uatu/build/libbpf
+    make BUILD_STATIC_ONLY=1 OBJDIR=/tmp/uatu/build/libbpf \
+         DESTDIR=/tmp/uatu/build/libbpf PREFIX="" install
+    cd /tmp/uatu
+    cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+    cmake --build build -j$(nproc)
 
 - name: Run with diagnostics
   run: |

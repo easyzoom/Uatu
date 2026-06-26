@@ -12,7 +12,7 @@ watch <function_name> [count] [timeout_ms]
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `function_name` | 字符串 | 必填 | 目标函数名，支持全限定名（`namespace::Class::method`）和正则表达式（用引号包裹） |
+| `function_name` | 字符串 | 必填 | 目标函数全限定名（`namespace::Class::method`），精确匹配 |
 | `count` | 整数 | 3 | 采集命中次数上限，达到后自动退出 |
 | `timeout_ms` | 整数 | 3000 | 等待超时，单位毫秒，超时后退出 |
 
@@ -24,9 +24,6 @@ uatu> watch fixtures::Calculator::add
 
 # 观测5次，等待最长5秒
 uatu> watch fixtures::Calculator::add 5 5000
-
-# 用正则匹配所有 Foo 类的方法，只采集1次
-uatu> watch "fixtures::Foo::.*" 1
 ```
 
 ## 输出格式
@@ -45,8 +42,9 @@ uatu> watch "fixtures::Foo::.*" 1
 
 ```
 ts=1750000000123  func=fixtures::Calculator::add  cost=0.042ms  ret=3
-  params=[1, 2]
 ```
+
+> **注：** 参数捕获（`params` 字段）功能规划中，当前版本不输出入参列表。
 
 ## 行为边界
 

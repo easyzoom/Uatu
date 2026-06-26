@@ -68,26 +68,21 @@ uatu>
 uatu> watch fixtures::Calculator::add
 ```
 
-每次目标函数被调用，uatu 打印一行（按 `Ctrl-C` 停止）：
+每次目标函数被调用，uatu 打印一行（`Ctrl-C` 退出 uatu 进程）：
 
 ```
 ts=1750000000123  func=fixtures::Calculator::add  cost=0.042ms  ret=3
-  params=[1, 2]
 ts=1750000000456  func=fixtures::Calculator::add  cost=0.038ms  ret=7
-  params=[3, 4]
-^C
-Stopped watching fixtures::Calculator::add
 ```
 
 **字段说明：**
 
 | 字段 | 含义 |
 |---|---|
-| `ts` | Unix 时间戳（毫秒） |
+| `ts` | Unix 时间戳（纳秒） |
 | `func` | 被观测的函数全名 |
 | `cost` | 函数执行耗时 |
 | `ret` | 函数返回值 |
-| `params` | 入参列表（按寄存器约定解析） |
 
 ---
 
@@ -97,16 +92,13 @@ Stopped watching fixtures::Calculator::add
 uatu> trace fixtures::Foo::slow
 ```
 
-打印以该函数为根的调用树，每个子调用独立计时：
+记录目标函数本次调用的耗时：
 
 ```
 +-fixtures::Foo::slow [2.341ms]
-  +-fixtures::Foo::add_internal [0.001ms]
-  +-fixtures::Foo::multiply_internal [0.002ms]
-  +-fixtures::Foo::sleep_ms [2.337ms]
 ```
 
-树形缩进直观展示调用层级，适合定位哪一层最耗时。
+> **注：** 当前版本追踪单层（目标函数本身），子调用展开功能规划中。
 
 ---
 

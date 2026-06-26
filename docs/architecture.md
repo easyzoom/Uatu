@@ -69,9 +69,9 @@
 **实现机制：**
 
 - 使用 `ptrace(PTRACE_ATTACH)` 接管目标进程
-- `trace` 命令：在函数入口/返回处设置 **INT3 软件断点**，记录调用帧和时间戳，递归捕获子调用
+- `trace` 命令：在目标函数入口/返回处各设置一个 **INT3 软件断点**，记录单层调用耗时
 - `stack` 命令：函数入口处暂停，通过 **frame pointer（rbp）链** 回溯完整调用栈
-- 读取/写入 `PTRACE_PEEKTEXT` / `PTRACE_POKETEXT` 以插入和还原断点指令
+- 读取/写入 `PTRACE_PEEKDATA` / `PTRACE_POKEDATA` 以插入和还原断点指令
 
 **适用命令：** `trace`、`stack`（也可 fallback `watch`）
 
@@ -89,9 +89,9 @@
 
 | 接口 | 描述 |
 |---|---|
-| `find_by_name(name)` | 按函数全名精确匹配（含命名空间、类名） |
-| `find_by_regex(pattern)` | 正则表达式匹配，返回所有匹配函数 |
-| `find_by_address(addr)` | 按虚拟地址反查函数名（用于 stack 解析） |
+| `find(name)` | 按函数全名精确匹配（含命名空间、类名） |
+| `find_regex(pattern)` | 正则表达式匹配，返回所有匹配函数 |
+| `lookup_by_addr(addr)` | 按虚拟地址反查函数名（用于 stack 解析） |
 
 **关键设计：**
 
@@ -119,7 +119,7 @@
 5. 用户调用 stop() 时 detach，还原目标进程状态
 ```
 
-**BPF 程序逻辑（`ebpf/uprobe.bpf.c`）：**
+**BPF 程序逻辑（`ebpf/watch.bpf.c`）：**
 
 - `uprobe_entry`：函数入口，记录时间戳、参数寄存器（rdi/rsi/rdx/rcx）
 - `uprobe_return`：函数返回，读取 rax（返回值），计算耗时，写入 ring buffer
@@ -135,28 +135,33 @@
 ```cpp
 class AttachEngine {
 public:
-    // attach 到目标进程
-    Result attach(pid_t pid);
+    // pid 通过构造函数传入，无需单独 attach()
+    explicit AttachEngine(int pid);
 
-    // 观测函数返回值和耗时（eBPF 优先，ptrace fallback）
-    Result watch(std::string_view func_name, WatchCallback cb);
+    // watch：eBPF 优先，ptrace fallback；watch_checked 返回 tl::expected 供错误处理
+    tl::expected<std::vector<WatchEvent>, EngineError>
+    watch_checked(const std::string& func_name, int max_events, int timeout_ms);
 
-    // 跟踪调用链（ptrace INT3）
-    Result trace(std::string_view func_name, TraceCallback cb);
+    std::vector<WatchEvent>
+    watch(const std::string& func_name, int max_events, int timeout_ms);
 
-    // 捕获调用栈（ptrace frame pointer walk）
-    Result stack(std::string_view func_name, StackCallback cb);
+    // trace / stack：始终使用 ptrace
+    std::vector<TraceNode> trace(const std::string& func_name, int count, int timeout_ms);
+    std::vector<StackEvent> stack(const std::string& func_name, int count, int timeout_ms);
 };
 ```
 
 **模式选择逻辑：**
 
 ```
-watch(func) 调用时：
-  if (ebpf_available && has_cap_bpf):
+AttachEngine engine(pid);   // 构造时解析 /proc/<pid>/exe
+
+watch_checked(func) 调用时：
+  先通过 SymbolFinder 解析 DWARF 获取函数地址
+  if (BPF_OBJ_PATH 可读 && bpf_object__load 成功):
       UprobeLoader.attach(func_addr)  → eBPF 模式
   else:
-      ptrace_watch(func_addr)         → ptrace 模式（自动降级，打印提示）
+      调用 trace() 采集耗时和返回值   → ptrace 降级模式
 
 trace(func) / stack(func):
       始终使用 ptrace 模式（需要精确断点控制）
@@ -174,7 +179,7 @@ trace(func) / stack(func):
 
 - 读取用户输入，解析命令（`watch`、`trace`、`stack`、`help`、`quit`）
 - 调用 `AttachEngine` 对应接口
-- 支持 `Ctrl-C` 停止当前 watch/trace，不退出程序
+- 当前版本 `Ctrl-C` 会退出 uatu 进程（REPL 内停止单条命令而保持运行的功能规划中）
 
 **Formatter（格式化输出）：**
 
@@ -213,7 +218,7 @@ CLI::parse("watch fixtures::Calculator::add")
   ▼
 AttachEngine::watch("fixtures::Calculator::add", callback)
   │
-  ├─ SymbolFinder::find_by_name("fixtures::Calculator::add")
+  ├─ SymbolFinder::find("fixtures::Calculator::add")
   │    ├─ 打开 /proc/<pid>/exe 读取 ELF
   │    ├─ 解析 .debug_info，遍历 DW_TAG_subprogram
   │    ├─ 匹配到函数，返回 {vaddr: 0x401234, size: 42}
@@ -237,7 +242,7 @@ AttachEngine::watch("fixtures::Calculator::add", callback)
   │
   ▼
 WatchFormatter::format(event)
-  → "ts=1750000000123  func=...  cost=0.042ms  ret=3\n  params=[1, 2]"
+  → "ts=1750000000123  func=...  cost=0.042ms  ret=3"
   │
   ▼
 输出到终端
@@ -250,7 +255,7 @@ WatchFormatter::format(event)
 ```
 uatu/
 ├── include/uatu/
-│   ├── types.h                  # 核心数据类型（WatchEvent, TraceFrame, StackFrame）
+│   ├── types.h                  # 核心数据类型（WatchEvent, TraceNode, StackEvent）
 │   ├── dwarf/
 │   │   └── symbol_finder.h      # SymbolFinder 接口
 │   ├── ebpf/
@@ -265,7 +270,7 @@ uatu/
 │   ├── ebpf/                    # UprobeLoader 实现
 │   ├── engine/                  # AttachEngine 实现
 │   ├── cli/                     # REPL + Formatter 实现
-│   └── uatu/                    # main()
+│   └── cli/                     # main()
 ├── ebpf/
 │   └── *.bpf.c                  # BPF 内核态程序
 └── tests/
@@ -302,7 +307,7 @@ sequenceDiagram
     loop Until 3 exit events collected
         Target->>BPF: function called
         BPF-->>Engine: RawEvent{args[6], ret_val, duration_ns}
-        Engine-->>CLI: WatchEvent{params=["42","hello"], ret="hello42", cost=0.23ms}
+        Engine-->>CLI: WatchEvent{ret="hello42", cost=0.23ms}
         CLI-->>User: ts=... func=myns::Foo::bar cost=0.23ms ret="hello42"
     end
     
