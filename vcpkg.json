@@ -1,0 +1,10 @@
+{
+  "name": "uatu",
+  "version": "0.1.0",
+  "dependencies": [
+    "nlohmann-json",
+    "replxx",
+    "gtest",
+    "tl-expected"
+  ]
+}

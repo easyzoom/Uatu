@@ -1,0 +1,88 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CMake: Configure (Debug)",
+      "type": "shell",
+      "command": "cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Configure (Release)",
+      "type": "shell",
+      "command": "cmake -B build -S . -DCMAKE_BUILD_TYPE=Release",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Build All",
+      "type": "shell",
+      "command": "cmake --build build -j$(nproc)",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": ["$gcc"],
+      "dependsOn": []
+    },
+    {
+      "label": "CMake: Build uatu CLI",
+      "type": "shell",
+      "command": "cmake --build build --target uatu -j$(nproc)",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Test: Unit Tests",
+      "type": "shell",
+      "command": "./build/tests/unit/test_symbol_finder && ./build/tests/unit/test_json_codec",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "test", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: Integration (no root)",
+      "type": "shell",
+      "command": "./build/tests/integration/test_watch --gtest_filter='WatchStrip*' && ./build/tests/integration/test_trace && ./build/tests/integration/test_stack",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: All (needs CAP_BPF / root for watch)",
+      "type": "shell",
+      "command": "./build/tests/unit/test_symbol_finder && ./build/tests/unit/test_json_codec && ./build/tests/integration/test_watch --gtest_filter='WatchStrip*' && ./build/tests/integration/test_trace && ./build/tests/integration/test_stack",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: target_debug fixture",
+      "type": "shell",
+      "command": "./build/tests/fixtures/target_debug",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "none",
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": [],
+      "isBackground": true
+    },
+    {
+      "label": "CMake: Clean",
+      "type": "shell",
+      "command": "cmake --build build --target clean",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "none",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    }
+  ]
+}

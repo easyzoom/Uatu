@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <radialGradient id="s-bg" cx="50%" cy="50%" r="70%">
+      <stop offset="0%"   stop-color="#0d1b2e"/>
+      <stop offset="100%" stop-color="#050a0f"/>
+    </radialGradient>
+    <radialGradient id="s-iris" cx="42%" cy="38%" r="60%">
+      <stop offset="0%"   stop-color="#7b2fff"/>
+      <stop offset="40%"  stop-color="#1a3a7a"/>
+      <stop offset="100%" stop-color="#04111f"/>
+    </radialGradient>
+    <radialGradient id="s-shimmer" cx="35%" cy="28%" r="55%">
+      <stop offset="0%"   stop-color="#00e5ff" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="s-pupil" cx="40%" cy="35%" r="65%">
+      <stop offset="0%"   stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+    <radialGradient id="s-sclera" cx="50%" cy="50%" r="60%">
+      <stop offset="0%"   stop-color="#d0e4ef"/>
+      <stop offset="100%" stop-color="#8eaab8"/>
+    </radialGradient>
+    <filter id="s-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="2.5" result="b"/>
+      <feComposite in="SourceGraphic" in2="b" operator="over"/>
+    </filter>
+    <clipPath id="s-eye-clip">
+      <path d="M 27,64 Q 64,32 101,64 Q 64,96 27,64 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="128" height="128" rx="20" ry="20" fill="url(#s-bg)"/>
+
+  <!-- Outer halo -->
+  <ellipse cx="64" cy="64" rx="50" ry="28"
+           fill="#00e5ff" opacity="0.05"
+           style="filter:blur(8px)"/>
+
+  <!-- Sclera -->
+  <path d="M 27,64 Q 64,32 101,64 Q 64,96 27,64 Z"
+        fill="url(#s-sclera)"/>
+
+  <!-- Iris -->
+  <circle cx="64" cy="64" r="23" fill="url(#s-iris)" clip-path="url(#s-eye-clip)"/>
+  <circle cx="64" cy="64" r="23" fill="url(#s-shimmer)" clip-path="url(#s-eye-clip)"/>
+
+  <!-- Pupil -->
+  <circle cx="64" cy="64" r="13.5" fill="url(#s-pupil)" clip-path="url(#s-eye-clip)"/>
+
+  <!-- {} symbol -->
+  <text x="64" y="67.5"
+        font-family="'Courier New', Courier, monospace"
+        font-size="9"
+        font-weight="bold"
+        text-anchor="middle"
+        dominant-baseline="middle"
+        fill="#ffffff"
+        letter-spacing="-0.5"
+        clip-path="url(#s-eye-clip)"
+        opacity="0.93">
+    {}
+  </text>
+
+  <!-- Eye outline with glow -->
+  <path d="M 27,64 Q 64,32 101,64 Q 64,96 27,64 Z"
+        fill="none"
+        stroke="#00e5ff"
+        stroke-width="1.5"
+        stroke-opacity="0.5"
+        filter="url(#s-glow)"/>
+  <path d="M 27,64 Q 64,32 101,64 Q 64,96 27,64 Z"
+        fill="none"
+        stroke="#00e5ff"
+        stroke-width="0.8"
+        stroke-opacity="0.9"/>
+
+  <!-- Corneal highlight -->
+  <ellipse cx="55" cy="54" rx="5" ry="3"
+           fill="#ffffff" opacity="0.2"
+           transform="rotate(-30,55,54)"
+           clip-path="url(#s-eye-clip)"/>
+</svg>

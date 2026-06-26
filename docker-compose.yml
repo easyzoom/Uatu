@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # 构建并运行单元测试
+  test-unit:
+    build:
+      context: .
+      target: builder
+    command: >
+      sh -c "
+        ./build/tests/unit/test_symbol_finder &&
+        ./build/tests/unit/test_json_codec
+      "
+    working_dir: /src
+
+  # 集成测试（需要 privileged 访问 ptrace）
+  test-integration:
+    build:
+      context: .
+      target: builder
+    command: >
+      sh -c "
+        ./build/tests/integration/test_watch --gtest_filter='WatchStrip*' &&
+        ./build/tests/integration/test_trace &&
+        ./build/tests/integration/test_stack
+      "
+    working_dir: /src
+    privileged: true   # ptrace 需要
+    pid: host          # 访问宿主机进程（如需 watch 宿主机进程）
+
+  # 开发环境（交互式）
+  dev:
+    build:
+      context: .
+      target: builder
+    working_dir: /src
+    volumes:
+      - .:/src          # 挂载源码，支持实时修改
+      - /sys:/sys:ro    # 访问 BTF 信息
+    privileged: true
+    stdin_open: true
+    tty: true
+    command: bash

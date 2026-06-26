@@ -1,0 +1,91 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug: uatu CLI",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/src/cli/uatu",
+      "args": ["--pid", "${input:targetPid}"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ],
+      "preLaunchTask": "CMake: Build uatu CLI"
+    },
+    {
+      "name": "Debug: test_symbol_finder",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/tests/unit/test_symbol_finder",
+      "args": ["--gtest_filter=${input:gtestFilter}"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "preLaunchTask": "CMake: Build All"
+    },
+    {
+      "name": "Debug: test_json_codec",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/tests/unit/test_json_codec",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "preLaunchTask": "CMake: Build All"
+    },
+    {
+      "name": "Debug: test_trace",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/tests/integration/test_trace",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "preLaunchTask": "CMake: Build All"
+    },
+    {
+      "name": "Debug: test_stack",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/tests/integration/test_stack",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "preLaunchTask": "CMake: Build All"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "targetPid",
+      "type": "promptString",
+      "description": "Target process PID to attach to",
+      "default": "1234"
+    },
+    {
+      "id": "gtestFilter",
+      "type": "promptString",
+      "description": "GTest filter (e.g. SymbolFinder.FindByDemangledName)",
+      "default": "*"
+    }
+  ]
+}

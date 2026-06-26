@@ -1,0 +1,239 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background rounded rect clip -->
+    <clipPath id="rounded-bg">
+      <rect width="512" height="512" rx="80" ry="80"/>
+    </clipPath>
+
+    <!-- Outer glow filter for eye outline -->
+    <filter id="glow-cyan" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur1"/>
+      <feComposite in="SourceGraphic" in2="blur1" operator="over"/>
+    </filter>
+
+    <!-- Soft glow for iris -->
+    <filter id="glow-iris" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur2"/>
+      <feComposite in="SourceGraphic" in2="blur2" operator="over"/>
+    </filter>
+
+    <!-- Outer halo blur -->
+    <filter id="halo" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="20" result="blurHalo"/>
+    </filter>
+
+    <!-- Pupil glow -->
+    <filter id="glow-pupil" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="blurP"/>
+      <feComposite in="SourceGraphic" in2="blurP" operator="over"/>
+    </filter>
+
+    <!-- Iris gradient: deep space nebula look -->
+    <radialGradient id="iris-grad" cx="42%" cy="38%" r="60%">
+      <stop offset="0%"   stop-color="#7b2fff"/>
+      <stop offset="30%"  stop-color="#1a3a7a"/>
+      <stop offset="60%"  stop-color="#0e4f6e"/>
+      <stop offset="100%" stop-color="#04111f"/>
+    </radialGradient>
+
+    <!-- Iris shimmer overlay gradient -->
+    <radialGradient id="iris-shimmer" cx="35%" cy="28%" r="55%">
+      <stop offset="0%"   stop-color="#00e5ff" stop-opacity="0.35"/>
+      <stop offset="50%"  stop-color="#7b2fff" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Pupil gradient -->
+    <radialGradient id="pupil-grad" cx="40%" cy="35%" r="65%">
+      <stop offset="0%"   stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+
+    <!-- Background gradient: deep space -->
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="70%">
+      <stop offset="0%"   stop-color="#0d1b2e"/>
+      <stop offset="100%" stop-color="#050a0f"/>
+    </radialGradient>
+
+    <!-- Star points mask for nebula texture -->
+    <radialGradient id="nebula1" cx="30%" cy="60%" r="40%">
+      <stop offset="0%"  stop-color="#3b0080" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="nebula2" cx="70%" cy="35%" r="35%">
+      <stop offset="0%"  stop-color="#003366" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Eye shape clip path (lens shape) -->
+    <clipPath id="eye-clip">
+      <!-- Intersection of two arcs forming an eye/lens shape -->
+      <path d="M 108,256
+               Q 256,128 404,256
+               Q 256,384 108,256 Z"/>
+    </clipPath>
+
+    <!-- Sclera (white of eye) gradient -->
+    <radialGradient id="sclera-grad" cx="50%" cy="50%" r="60%">
+      <stop offset="0%"   stop-color="#dce8f0"/>
+      <stop offset="70%"  stop-color="#b8ccd8"/>
+      <stop offset="100%" stop-color="#8eaab8"/>
+    </radialGradient>
+  </defs>
+
+  <!-- ── Background ── -->
+  <rect width="512" height="512" rx="80" ry="80" fill="url(#bg-grad)"/>
+
+  <!-- Subtle star field -->
+  <g clip-path="url(#rounded-bg)" opacity="0.6">
+    <circle cx="60"  cy="80"  r="1.2" fill="#ffffff" opacity="0.7"/>
+    <circle cx="150" cy="45"  r="0.8" fill="#00e5ff" opacity="0.5"/>
+    <circle cx="310" cy="60"  r="1.0" fill="#ffffff" opacity="0.6"/>
+    <circle cx="420" cy="90"  r="0.7" fill="#ffffff" opacity="0.4"/>
+    <circle cx="470" cy="50"  r="1.3" fill="#7b2fff" opacity="0.5"/>
+    <circle cx="80"  cy="430" r="1.0" fill="#ffffff" opacity="0.5"/>
+    <circle cx="200" cy="460" r="0.8" fill="#00e5ff" opacity="0.4"/>
+    <circle cx="370" cy="450" r="1.2" fill="#ffffff" opacity="0.6"/>
+    <circle cx="460" cy="420" r="0.9" fill="#7b2fff" opacity="0.5"/>
+    <circle cx="50"  cy="200" r="0.7" fill="#ffffff" opacity="0.3"/>
+    <circle cx="480" cy="250" r="1.0" fill="#ffffff" opacity="0.4"/>
+    <circle cx="100" cy="310" r="0.8" fill="#00e5ff" opacity="0.35"/>
+    <circle cx="440" cy="330" r="0.7" fill="#ffffff" opacity="0.4"/>
+    <circle cx="255" cy="100" r="0.9" fill="#ffffff" opacity="0.3"/>
+    <circle cx="330" cy="390" r="1.1" fill="#7b2fff" opacity="0.4"/>
+  </g>
+
+  <!-- ── Outer ambient halo (very subtle) ── -->
+  <ellipse cx="256" cy="256" rx="200" ry="110"
+           fill="#00e5ff" opacity="0.06" filter="url(#halo)"/>
+
+  <!-- ── Eye white (sclera) inside lens shape ── -->
+  <path d="M 108,256
+           Q 256,128 404,256
+           Q 256,384 108,256 Z"
+        fill="url(#sclera-grad)"/>
+
+  <!-- ── Iris circle (nebula gradient + texture) ── -->
+  <circle cx="256" cy="256" r="92" fill="url(#iris-grad)" clip-path="url(#eye-clip)"/>
+
+  <!-- Nebula texture overlays inside iris -->
+  <circle cx="256" cy="256" r="92" fill="url(#nebula1)" clip-path="url(#eye-clip)" opacity="0.8"/>
+  <circle cx="256" cy="256" r="92" fill="url(#nebula2)" clip-path="url(#eye-clip)" opacity="0.7"/>
+
+  <!-- Iris shimmer highlight -->
+  <circle cx="256" cy="256" r="92" fill="url(#iris-shimmer)" clip-path="url(#eye-clip)"/>
+
+  <!-- Iris ring border -->
+  <circle cx="256" cy="256" r="92"
+          fill="none" stroke="#00e5ff" stroke-width="1.5" stroke-opacity="0.5"
+          clip-path="url(#eye-clip)"/>
+
+  <!-- Fine iris texture lines (radial suggestion) -->
+  <g clip-path="url(#eye-clip)" opacity="0.18">
+    <line x1="256" y1="164" x2="256" y2="348" stroke="#00e5ff" stroke-width="0.5"/>
+    <line x1="164" y1="256" x2="348" y2="256" stroke="#00e5ff" stroke-width="0.5"/>
+    <line x1="191" y1="191" x2="321" y2="321" stroke="#7b2fff" stroke-width="0.5"/>
+    <line x1="321" y1="191" x2="191" y2="321" stroke="#7b2fff" stroke-width="0.5"/>
+    <line x1="210" y1="175" x2="302" y2="337" stroke="#00e5ff" stroke-width="0.4"/>
+    <line x1="302" y1="175" x2="210" y2="337" stroke="#00e5ff" stroke-width="0.4"/>
+    <line x1="175" y1="210" x2="337" y2="302" stroke="#7b2fff" stroke-width="0.4"/>
+    <line x1="337" y1="210" x2="175" y2="302" stroke="#7b2fff" stroke-width="0.4"/>
+  </g>
+
+  <!-- ── Pupil ── -->
+  <circle cx="256" cy="256" r="54" fill="url(#pupil-grad)" clip-path="url(#eye-clip)"/>
+
+  <!-- Pupil inner glow ring -->
+  <circle cx="256" cy="256" r="54"
+          fill="none" stroke="#7b2fff" stroke-width="1.5" stroke-opacity="0.6"
+          clip-path="url(#eye-clip)" filter="url(#glow-pupil)"/>
+
+  <!-- ── C++ symbol "{}" in pupil ── -->
+  <text x="256" y="270"
+        font-family="'Courier New', Courier, monospace"
+        font-size="36"
+        font-weight="bold"
+        text-anchor="middle"
+        dominant-baseline="middle"
+        fill="#ffffff"
+        letter-spacing="-2"
+        clip-path="url(#eye-clip)"
+        opacity="0.92">
+    {}
+  </text>
+
+  <!-- Subtle text glow -->
+  <text x="256" y="270"
+        font-family="'Courier New', Courier, monospace"
+        font-size="36"
+        font-weight="bold"
+        text-anchor="middle"
+        dominant-baseline="middle"
+        fill="#00e5ff"
+        letter-spacing="-2"
+        clip-path="url(#eye-clip)"
+        opacity="0.30"
+        filter="url(#glow-pupil)">
+    {}
+  </text>
+
+  <!-- ── Eye outline with glow ── -->
+  <!-- Glow layer (blurred, behind) -->
+  <path d="M 108,256
+           Q 256,128 404,256
+           Q 256,384 108,256 Z"
+        fill="none"
+        stroke="#00e5ff"
+        stroke-width="4"
+        stroke-opacity="0.5"
+        filter="url(#glow-cyan)"/>
+  <!-- Crisp outline on top -->
+  <path d="M 108,256
+           Q 256,128 404,256
+           Q 256,384 108,256 Z"
+        fill="none"
+        stroke="#00e5ff"
+        stroke-width="1.8"
+        stroke-opacity="0.9"/>
+
+  <!-- ── Eyelash curves (upper) ── -->
+  <g stroke="#00e5ff" stroke-linecap="round" fill="none" opacity="0.55">
+    <!-- Upper lashes: short curved lines from the upper lid arc -->
+    <path d="M 175,196 Q 168,178 164,162" stroke-width="1.8"/>
+    <path d="M 210,172 Q 206,153 205,137" stroke-width="1.8"/>
+    <path d="M 256,162 Q 256,143 257,126" stroke-width="1.8"/>
+    <path d="M 302,172 Q 306,153 307,137" stroke-width="1.8"/>
+    <path d="M 337,196 Q 344,178 348,162" stroke-width="1.8"/>
+  </g>
+
+  <!-- ── Eyelash curves (lower) ── -->
+  <g stroke="#00e5ff" stroke-linecap="round" fill="none" opacity="0.40">
+    <!-- Lower lashes: short lines from the lower lid arc -->
+    <path d="M 175,316 Q 168,334 164,350" stroke-width="1.5"/>
+    <path d="M 210,340 Q 206,359 205,375" stroke-width="1.5"/>
+    <path d="M 256,350 Q 256,369 257,386" stroke-width="1.5"/>
+    <path d="M 302,340 Q 306,359 307,375" stroke-width="1.5"/>
+    <path d="M 337,316 Q 344,334 348,350" stroke-width="1.5"/>
+  </g>
+
+  <!-- ── Corneal highlight ── -->
+  <ellipse cx="222" cy="218" rx="18" ry="11"
+           fill="#ffffff" opacity="0.18"
+           transform="rotate(-30,222,218)"
+           clip-path="url(#eye-clip)"/>
+
+  <!-- ── Outer decorative ring (very subtle) ── -->
+  <circle cx="256" cy="256" r="180"
+          fill="none"
+          stroke="#00e5ff"
+          stroke-width="0.8"
+          stroke-opacity="0.12"
+          stroke-dasharray="4 8"/>
+
+  <circle cx="256" cy="256" r="200"
+          fill="none"
+          stroke="#7b2fff"
+          stroke-width="0.6"
+          stroke-opacity="0.08"
+          stroke-dasharray="2 12"/>
+</svg>
