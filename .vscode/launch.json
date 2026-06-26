@@ -48,6 +48,19 @@
       "preLaunchTask": "CMake: Build All"
     },
     {
+      "name": "Debug: test_watch",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/tests/integration/test_watch",
+      "args": ["--gtest_filter=${input:gtestFilter}"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "preLaunchTask": "CMake: Build All"
+    },
+    {
       "name": "Debug: test_trace",
       "type": "cppdbg",
       "request": "launch",

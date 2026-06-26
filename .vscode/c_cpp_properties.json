@@ -4,10 +4,10 @@
       "name": "Linux",
       "includePath": [
         "${workspaceFolder}/include",
-        "${workspaceFolder}/build/_deps/**",
+        "${workspaceFolder}/build/libbpf/include",
+        "${workspaceFolder}/build/_deps/nlohmann_json-src/include",
         "/usr/include",
-        "/usr/include/elfutils",
-        "/usr/src/linux-headers-${env:KERNEL_VERSION}/tools/bpf/resolve_btfids/libbpf/include"
+        "/usr/include/elfutils"
       ],
       "defines": [],
       "compilerPath": "/usr/bin/g++",
