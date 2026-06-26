@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
 
     if (pid < 0) {
         std::cout << "Usage: uatu --pid <PID>\n\n";
-        std::cout << "Running processes:\n";
+        std::cout << "Running processes:\n" << std::flush;
         list_processes();
         return 1;
     }
