@@ -46,6 +46,9 @@ uatu> watch fixtures::Calculator::add 5 5000
 ```
 ts=1750000000123  func=fixtures::Calculator::add  cost=0.042ms  ret=3
   params=[1, 2]
+
+ts=1750000000456  func=fixtures::str_len  cost=0.001ms  ret=11
+  params=["hello world"]
 ```
 
 **参数捕获说明（仅 eBPF 路径）：**
@@ -54,8 +57,8 @@ ts=1750000000123  func=fixtures::Calculator::add  cost=0.042ms  ret=3
 |------|----------|
 | 整数（int/short/char/long/long long，含 signed/unsigned） | 十进制数值 |
 | bool | `true` / `false` |
-| 指针（`T*`） | `0x{hex地址}` |
-| 字符串指针（`char*`/`const char*`） | `"<0x{hex地址}>"` |
+| 字符串指针（`char*`/`const char*`） | `"hello world"`（读取实际字符串内容，截断至 256 字节） |
+| 其他指针（`T*`） | `0x{hex地址}` |
 | 引用（`T&`） | `&0x{hex地址}` |
 | 浮点（float/double） | `<xmm0>`、`<xmm1>` 等（浮点参数通过 XMM 寄存器传递，BPF 未捕获） |
 
