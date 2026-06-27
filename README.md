@@ -115,6 +115,7 @@ Commands: watch <func>  trace <func>  stack <func>  help  quit
 ```
 uatu> watch fixtures::Calculator::add
 ts=1750000000123  func=fixtures::Calculator::add  cost=0.042ms  ret=3
+  params=[1, 2]
 ```
 
 Fires on every invocation. Press `Ctrl-C` to stop watching.

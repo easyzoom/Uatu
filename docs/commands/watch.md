@@ -12,15 +12,18 @@ watch <function_name> [count] [timeout_ms]
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `function_name` | 字符串 | 必填 | 目标函数全限定名（`namespace::Class::method`），精确匹配 |
+| `function_name` | 字符串 | 必填 | 目标函数全限定名（精确匹配），或 C++ 正则表达式（无精确匹配时自动回退） |
 | `count` | 整数 | 3 | 采集命中次数上限，达到后自动退出 |
 | `timeout_ms` | 整数 | 3000 | 等待超时，单位毫秒，超时后退出 |
 
 ## 示例
 
 ```
-# 观测一个成员函数，使用默认参数（最多3次，3秒超时）
+# 精确匹配一个成员函数
 uatu> watch fixtures::Calculator::add
+
+# 正则匹配——同时观测 Foo 类下所有方法（bar、slow、add_internal）
+uatu> watch "fixtures::Foo::.*"
 
 # 观测5次，等待最长5秒
 uatu> watch fixtures::Calculator::add 5 5000
@@ -42,9 +45,21 @@ uatu> watch fixtures::Calculator::add 5 5000
 
 ```
 ts=1750000000123  func=fixtures::Calculator::add  cost=0.042ms  ret=3
+  params=[1, 2]
 ```
 
-> **注：** 参数捕获（`params` 字段）功能规划中，当前版本不输出入参列表。
+**参数捕获说明（仅 eBPF 路径）：**
+
+| 类型 | 输出格式 |
+|------|----------|
+| 整数（int/short/char/long/long long，含 signed/unsigned） | 十进制数值 |
+| bool | `true` / `false` |
+| 指针（`T*`） | `0x{hex地址}` |
+| 字符串指针（`char*`/`const char*`） | `"<0x{hex地址}>"` |
+| 引用（`T&`） | `&0x{hex地址}` |
+| 浮点（float/double） | `<xmm0>`、`<xmm1>` 等（浮点参数通过 XMM 寄存器传递，BPF 未捕获） |
+
+> **限制：** ptrace 降级模式（eBPF 不可用时）不捕获参数，`params` 为空。
 
 ## 行为边界
 
@@ -84,9 +99,13 @@ echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
 
 ```mermaid
 flowchart LR
-    A["watch Foo::bar"] --> B["SymbolFinder\nlookup by name"]
-    B --> C["UprobeLoader\nattach uprobe+uretprobe"]
-    C --> D["eBPF ring buffer\nperf_event poll"]
-    D --> E["DWARF type info\nformat args/ret"]
-    E --> F["Formatted output\nto terminal"]
+    A["watch pattern"] --> B{"精确匹配?"}
+    B -->|找到| C["单个 FuncInfo"]
+    B -->|未找到| D["find_regex()\n返回多个 FuncInfo"]
+    C --> E["UprobeLoader\n逐一 attach uprobe+uretprobe"]
+    D --> E
+    E --> F["eBPF ring buffer\n事件携带 func_addr"]
+    F --> G["addr_to_idx 映射\n归属到正确 FuncInfo"]
+    G --> H["DWARF 类型信息\nformat params/ret"]
+    H --> I["格式化输出\n每条事件含 func_name"]
 ```

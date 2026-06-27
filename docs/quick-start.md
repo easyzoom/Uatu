@@ -72,7 +72,9 @@ uatu> watch fixtures::Calculator::add
 
 ```
 ts=1750000000123  func=fixtures::Calculator::add  cost=0.042ms  ret=3
+  params=[1, 2]
 ts=1750000000456  func=fixtures::Calculator::add  cost=0.038ms  ret=7
+  params=[1, 3]
 ```
 
 **字段说明：**
@@ -83,6 +85,7 @@ ts=1750000000456  func=fixtures::Calculator::add  cost=0.038ms  ret=7
 | `func` | 被观测的函数全名 |
 | `cost` | 函数执行耗时 |
 | `ret` | 函数返回值 |
+| `params` | 函数入参（eBPF 路径；浮点参数显示为 `<xmmN>`，ptrace 降级时为空） |
 
 ---
 

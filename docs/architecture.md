@@ -237,12 +237,14 @@ AttachEngine::watch("fixtures::Calculator::add", callback)
   ▼
 事件触发（函数被调用）
   │
-  ├─ [eBPF] ring buffer 回调：{ts, cost_ns, retval, params[]}
-  └─ [ptrace] SIGTRAP → 读取 rax / rdi / rsi → 恢复 INT3 → 继续执行
+  ├─ [eBPF] entry 事件：缓存 args[0..5] 到 entry_args[tid]
+  │         exit  事件：取出 entry_args[tid]，格式化 ret + params
+  └─ [ptrace] SIGTRAP → 读取 rax（返回值）→ 恢复 INT3 → 继续执行
+  │           （ptrace 路径不捕获入参，params 为空）
   │
   ▼
 WatchFormatter::format(event)
-  → "ts=1750000000123  func=...  cost=0.042ms  ret=3"
+  → "ts=1750000000123  func=...  cost=0.042ms  ret=3\n  params=[1, 2]"
   │
   ▼
 输出到终端
@@ -305,10 +307,14 @@ sequenceDiagram
     BPF->>Target: eBPF uprobe on myns::Foo::bar
     
     loop Until 3 exit events collected
-        Target->>BPF: function called
-        BPF-->>Engine: RawEvent{args[6], ret_val, duration_ns}
-        Engine-->>CLI: WatchEvent{ret="hello42", cost=0.23ms}
-        CLI-->>User: ts=... func=myns::Foo::bar cost=0.23ms ret="hello42"
+        Target->>BPF: function entry
+        BPF-->>Engine: RawEvent{is_exit=0, args[6], tid}
+        Note over Engine: cache entry_args[tid] = args[6]
+        Target->>BPF: function exit
+        BPF-->>Engine: RawEvent{is_exit=1, ret_val, duration_ns, tid}
+        Note over Engine: lookup entry_args[tid], format params
+        Engine-->>CLI: WatchEvent{ret="hello42", params=["42","hello"], cost=0.23ms}
+        CLI-->>User: ts=... func=myns::Foo::bar cost=0.23ms ret="hello42"\n  params=[42, hello]
     end
     
     Engine->>BPF: detach_all()
