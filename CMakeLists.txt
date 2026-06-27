@@ -13,7 +13,21 @@ endif()
 find_package(nlohmann_json CONFIG QUIET)
 find_package(replxx        CONFIG QUIET)
 find_package(GTest         CONFIG QUIET)
-find_package(tl-expected   CONFIG QUIET)
+
+# tl-expected: system/vcpkg first, FetchContent fallback (not in Ubuntu 22.04 apt)
+find_package(tl-expected CONFIG QUIET)
+if(NOT tl-expected_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        tl-expected
+        GIT_REPOSITORY https://github.com/TartanLlama/expected.git
+        GIT_TAG        v1.1.0
+        GIT_SHALLOW    TRUE
+    )
+    set(EXPECTED_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(tl-expected)
+    message(STATUS "tl-expected: using FetchContent (v1.1.0)")
+endif()
 
 # Interface library to share include path across all targets
 add_library(uatu_includes INTERFACE)

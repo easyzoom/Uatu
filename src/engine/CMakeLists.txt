@@ -3,6 +3,7 @@ add_library(uatu_engine
 )
 target_link_libraries(uatu_engine
     PUBLIC  uatu_includes
+            tl::expected
     PRIVATE uatu_dwarf
             uatu_ebpf
 )
