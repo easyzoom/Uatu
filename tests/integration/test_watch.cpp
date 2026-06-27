@@ -56,6 +56,30 @@ TEST(WatchDebug, CapturesParams) {
     EXPECT_EQ(events[0].params[1], "2");
 }
 
+TEST(WatchDebug, CapturesStringParam) {
+    FixtureProcess proc(FIXTURE_DEBUG);
+    ASSERT_GT(proc.pid, 0);
+
+    uatu::AttachEngine engine(proc.pid);
+    // fixtures::str_len is called with "hello world"
+    auto result = engine.watch_checked("fixtures::str_len",
+                                       /*max_events=*/1, /*timeout_ms=*/3000);
+    if (!result) {
+        if (result.error().message.find("eBPF") != std::string::npos ||
+            result.error().message.find("CAP_BPF") != std::string::npos ||
+            result.error().message.find("bpf_object") != std::string::npos) {
+            GTEST_SKIP() << "eBPF unavailable: " << result.error().message;
+        }
+        FAIL() << "watch_checked failed: " << result.error().message;
+    }
+
+    const auto& events = *result;
+    ASSERT_GE(events.size(), 1u);
+    ASSERT_EQ(events[0].params.size(), 1u);
+    EXPECT_EQ(events[0].params[0], "\"hello world\"");
+    EXPECT_EQ(events[0].ret_value, "11");  // strlen("hello world") == 11
+}
+
 TEST(WatchDebug, RegexMatchesMultipleFunctions) {
     FixtureProcess proc(FIXTURE_DEBUG);
     ASSERT_GT(proc.pid, 0);

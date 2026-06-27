@@ -94,26 +94,72 @@ static std::string format_param_val(uint64_t v, const std::string& type) {
     return std::to_string(v);
 }
 
+// Returns true for char-pointer types whose content can be read as a C string.
+static bool is_char_ptr(const std::string& type) {
+    const std::string s = strip_cv(type);
+    return s == "char*" || s == "char *";
+}
+
+// Read a null-terminated C string from the target process via /proc/<pid>/mem.
+// Returns the string content on success, empty string on failure.
+static std::string read_proc_mem_str(int pid, uint64_t addr,
+                                     std::size_t max_len = 256) {
+    if (addr == 0) return "";
+    std::string path = "/proc/" + std::to_string(pid) + "/mem";
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) return "";
+
+    std::vector<char> buf(max_len);
+    ssize_t n = pread(fd, buf.data(), max_len, static_cast<off_t>(addr));
+    close(fd);
+    if (n <= 0) return "";
+
+    // Find null terminator
+    std::size_t len = 0;
+    while (len < static_cast<std::size_t>(n) && buf[len] != '\0') ++len;
+
+    // Build printable escaped string
+    std::string result;
+    result.reserve(len);
+    for (std::size_t i = 0; i < len; ++i) {
+        unsigned char c = buf[i];
+        if      (c == '"')  result += "\\\"";
+        else if (c == '\\') result += "\\\\";
+        else if (c >= 0x20 && c < 0x7f) result += static_cast<char>(c);
+        else {
+            char esc[5];
+            snprintf(esc, sizeof(esc), "\\x%02x", c);
+            result += esc;
+        }
+    }
+    return result;
+}
+
 // Apply the x86_64 SysV ABI to produce formatted param strings.
 // Integer/pointer args use RDI/RSI/RDX/RCX/R8/R9 (args[0..5]).
 // Floating-point args use XMM0..7 — not captured; shown as "<xmmN>".
+// str_vals: pre-resolved string content for char* params (indexed by param position).
 static std::vector<std::string> format_params(
         const std::vector<std::string>& param_types,
         const uint64_t args[6],
-        bool has_this) {
+        bool has_this,
+        const std::vector<std::string>& str_vals = {}) {
     std::vector<std::string> result;
     result.reserve(param_types.size());
-    // Member functions pass 'this' in args[0] even though it's not in param_types;
-    // skip that slot so explicit params map to the correct registers.
     int int_reg = has_this ? 1 : 0;
     int fp_reg  = 0;
-    for (const auto& t : param_types) {
+    for (std::size_t i = 0; i < param_types.size(); ++i) {
+        const auto& t = param_types[i];
         if (is_fp_param(t)) {
             result.push_back("<xmm" + std::to_string(fp_reg++) + ">");
         } else if (int_reg < 6) {
-            result.push_back(format_param_val(args[int_reg++], t));
+            if (i < str_vals.size() && !str_vals[i].empty())
+                result.push_back("\"" + str_vals[i] + "\"");
+            else
+                result.push_back(format_param_val(args[int_reg], t));
+            int_reg++;
         } else {
-            result.push_back("?");  // stack-passed args not captured
+            result.push_back("?");
         }
     }
     return result;
@@ -225,10 +271,11 @@ AttachEngine::watch_checked(const std::string& func_name,
     for (std::size_t i = 0; i < targets.size(); ++i)
         addr_to_idx[targets[i].address + slide] = i;
 
-    // Entry cache: tid → {args[6], target_index}
+    // Entry cache: tid → {args[6], target_index, pre-resolved string values}
     struct EntryData {
-        std::array<uint64_t, 6> args;
-        std::size_t             idx{0};
+        std::array<uint64_t, 6>  args;
+        std::size_t              idx{0};
+        std::vector<std::string> str_vals;  // resolved char* content, indexed by param position
     };
     std::unordered_map<uint32_t, EntryData> entry_cache;
 
@@ -251,13 +298,28 @@ AttachEngine::watch_checked(const std::string& func_name,
 
             loader.poll(remaining, [&](const ebpf::RawEvent& raw) {
                 if (!raw.is_exit) {
-                    // Entry event: cache args and identify which function via func_addr.
+                    // Entry event: cache args, identify function, pre-resolve char* params.
                     auto ait = addr_to_idx.find(raw.func_addr);
                     if (ait == addr_to_idx.end()) return;
                     EntryData ed;
                     std::copy(std::begin(raw.args), std::end(raw.args), ed.args.begin());
                     ed.idx = ait->second;
-                    entry_cache[raw.tid] = ed;
+
+                    // Walk param types with ABI convention to find char* args and
+                    // read their content from the target process now, while the
+                    // stack frame is still alive.
+                    const FuncInfo& fi = targets[ait->second];
+                    ed.str_vals.resize(fi.param_types.size());
+                    int int_r = fi.has_this ? 1 : 0, fp_r = 0;
+                    for (std::size_t pi = 0; pi < fi.param_types.size(); ++pi) {
+                        const auto& pt = fi.param_types[pi];
+                        if (is_fp_param(pt)) { fp_r++; continue; }
+                        if (int_r < 6 && is_char_ptr(pt) && ed.args[int_r] != 0)
+                            ed.str_vals[pi] = read_proc_mem_str(impl_->pid, ed.args[int_r]);
+                        int_r++;
+                    }
+
+                    entry_cache[raw.tid] = std::move(ed);
                     return;
                 }
                 if (static_cast<int>(events.size()) >= max_events) return;
@@ -276,7 +338,7 @@ AttachEngine::watch_checked(const std::string& func_name,
                 auto cit = entry_cache.find(raw.tid);
                 if (cit != entry_cache.end() && cit->second.idx == ait->second) {
                     ev.params = format_params(fi.param_types, cit->second.args.data(),
-                                              fi.has_this);
+                                              fi.has_this, cit->second.str_vals);
                     entry_cache.erase(cit);
                 }
 

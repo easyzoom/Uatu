@@ -14,6 +14,14 @@ public:
     }
 };
 
+// Free function with const char* param — used to test string capture.
+std::size_t str_len(const char* s) {
+    if (!s) return 0;
+    std::size_t n = 0;
+    while (s[n]) ++n;
+    return n;
+}
+
 class Foo {
 public:
     std::string bar(int x, const std::string& msg) {
@@ -45,6 +53,7 @@ int main() {
         calc.divide(10.0, 3.0);
         foo.bar(5, "hello");
         foo.slow(100);
+        fixtures::str_len("hello world");
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }
