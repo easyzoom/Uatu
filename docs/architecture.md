@@ -179,7 +179,7 @@ trace(func) / stack(func):
 
 - 读取用户输入，解析命令（`watch`、`trace`、`stack`、`help`、`quit`）
 - 调用 `AttachEngine` 对应接口
-- 当前版本 `Ctrl-C` 会退出 uatu 进程（REPL 内停止单条命令而保持运行的功能规划中）
+- `Ctrl-C` 停止当前正在执行的命令并返回 `uatu>` 提示符；在提示符处按 `Ctrl-C` 退出程序
 
 **Formatter（格式化输出）：**
 

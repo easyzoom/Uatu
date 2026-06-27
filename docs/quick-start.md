@@ -68,7 +68,7 @@ uatu>
 uatu> watch fixtures::Calculator::add
 ```
 
-每次目标函数被调用，uatu 打印一行（`Ctrl-C` 退出 uatu 进程）：
+每次目标函数被调用，uatu 打印一行（`Ctrl-C` 停止当前命令并返回 `uatu>` 提示符；在提示符处按 `Ctrl-C` 退出程序）：
 
 ```
 ts=1750000000123  func=fixtures::Calculator::add  cost=0.042ms  ret=3

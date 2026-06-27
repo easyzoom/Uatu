@@ -118,7 +118,7 @@ ts=1750000000123  func=fixtures::Calculator::add  cost=0.042ms  ret=3
   params=[1, 2]
 ```
 
-Fires on every invocation. Press `Ctrl-C` to stop watching.
+Fires on every invocation. Press `Ctrl-C` to stop the command and return to the `uatu>` prompt.
 
 > **Note:** The target binary must be compiled with `-g` (DWARF debug info). Functions inlined by `-O2` are not observable — uatu will tell you if this is the case.
 
