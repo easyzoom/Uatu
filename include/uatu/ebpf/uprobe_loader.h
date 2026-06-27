@@ -11,6 +11,7 @@ struct RawEvent {
     uint64_t duration_ns;
     uint64_t args[6];
     uint64_t ret_val;
+    uint64_t func_addr;  // runtime address of probed function
     uint32_t tid;
     uint8_t  is_exit;
 };

@@ -17,6 +17,7 @@ struct watch_event {
     __u64 duration_ns;
     __u64 args[6];    // RDI RSI RDX RCX R8 R9（System V AMD64 ABI）
     __u64 ret_val;
+    __u64 func_addr;  // runtime address of probed function (bpf_get_func_ip)
     __u32 tid;
     __u8  is_exit;    // 0=entry, 1=exit
 };
@@ -39,6 +40,7 @@ int uprobe_entry(struct pt_regs *ctx) {
     ev->duration_ns  = 0;
     ev->tid          = tid;
     ev->is_exit      = 0;
+    ev->func_addr    = bpf_get_func_ip(ctx);
     ev->args[0] = PT_REGS_PARM1(ctx);
     ev->args[1] = PT_REGS_PARM2(ctx);
     ev->args[2] = PT_REGS_PARM3(ctx);
@@ -65,6 +67,7 @@ int uprobe_exit(struct pt_regs *ctx) {
     ev->duration_ns  = entry_ts ? (now - *entry_ts) : 0;
     ev->tid          = tid;
     ev->is_exit      = 1;
+    ev->func_addr    = bpf_get_func_ip(ctx);
     ev->ret_val      = PT_REGS_RC(ctx);
     __builtin_memset(ev->args, 0, sizeof(ev->args));
     bpf_ringbuf_submit(ev, 0);

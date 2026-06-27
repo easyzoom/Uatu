@@ -56,6 +56,32 @@ TEST(WatchDebug, CapturesParams) {
     EXPECT_EQ(events[0].params[1], "2");
 }
 
+TEST(WatchDebug, RegexMatchesMultipleFunctions) {
+    FixtureProcess proc(FIXTURE_DEBUG);
+    ASSERT_GT(proc.pid, 0);
+
+    uatu::AttachEngine engine(proc.pid);
+    // Pattern matches both fixtures::Foo::bar and fixtures::Foo::slow
+    auto result = engine.watch_checked("fixtures::Foo::.*",
+                                       /*max_events=*/2, /*timeout_ms=*/3000);
+    if (!result) {
+        if (result.error().message.find("eBPF") != std::string::npos ||
+            result.error().message.find("CAP_BPF") != std::string::npos ||
+            result.error().message.find("bpf_object") != std::string::npos) {
+            GTEST_SKIP() << "eBPF unavailable: " << result.error().message;
+        }
+        FAIL() << "watch_checked failed: " << result.error().message;
+    }
+
+    const auto& events = *result;
+    ASSERT_GE(events.size(), 1u);
+    // All events must come from functions matching the pattern (bar/slow/add_internal)
+    for (const auto& ev : events) {
+        EXPECT_TRUE(ev.func_name.substr(0, 14) == "fixtures::Foo:")
+            << "Unexpected func_name: " << ev.func_name;
+    }
+}
+
 TEST(WatchStrip, ReturnsNoDwarfError) {
     FixtureProcess proc(FIXTURE_STRIP);
     ASSERT_GT(proc.pid, 0);

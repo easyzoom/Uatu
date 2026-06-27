@@ -14,6 +14,7 @@
 #include <ctime>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 #include <array>
 #include <elf.h>
 #include <fcntl.h>
@@ -172,51 +173,72 @@ AttachEngine::~AttachEngine() = default;
 tl::expected<std::vector<WatchEvent>, EngineError>
 AttachEngine::watch_checked(const std::string& func_name,
                             int max_events, int timeout_ms) {
-    // Step 1: DWARF lookup — must succeed before touching BPF
-    FuncInfo info;
+    // Step 1: Resolve targets — exact match first, regex fallback.
+    std::vector<FuncInfo> targets;
     try {
         auto opt = impl_->get_finder().find(func_name);
-        if (!opt)
-            return tl::unexpected(EngineError{"function not found in DWARF: " + func_name});
-        info = *opt;
+        if (opt) {
+            targets.push_back(*opt);
+        } else {
+            for (auto& fi : impl_->get_finder().find_regex(func_name))
+                targets.push_back(std::move(fi));
+        }
     } catch (const std::exception& ex) {
-        // get_finder() throws "no DWARF debug info in: ..." for stripped binaries
         std::string msg = ex.what();
         if (msg.find("DWARF") == std::string::npos)
             msg = "no DWARF debug info: " + msg;
         return tl::unexpected(EngineError{msg});
     }
 
-    if (info.address == 0)
-        return tl::unexpected(EngineError{"function has no address (inlined?): " + func_name});
+    // Remove inlined functions (no address).
+    targets.erase(std::remove_if(targets.begin(), targets.end(),
+        [](const FuncInfo& f) { return f.address == 0; }), targets.end());
 
-    // Step 2: ptrace fallback helper — used when .bpf.o is absent or eBPF load fails.
+    if (targets.empty())
+        return tl::unexpected(EngineError{"function not found (or all inlined): " + func_name});
+
+    // Step 2: ptrace fallback — trace each target function sequentially.
     auto ptrace_watch = [&]() -> tl::expected<std::vector<WatchEvent>, EngineError> {
-        auto nodes = trace(func_name, max_events, timeout_ms);
         std::vector<WatchEvent> evs;
-        for (auto& node : nodes) {
-            WatchEvent ev;
-            ev.func_name   = node.func_name;
-            ev.duration_ns = node.duration_ns;
-            ev.ret_value   = format_int_val(node.ret_raw, info.return_type);
-            evs.push_back(std::move(ev));
+        for (const auto& fi : targets) {
+            auto nodes = trace(fi.name, max_events, timeout_ms);
+            for (auto& node : nodes) {
+                WatchEvent ev;
+                ev.func_name   = fi.name;
+                ev.duration_ns = node.duration_ns;
+                ev.ret_value   = format_int_val(node.ret_raw, fi.return_type);
+                evs.push_back(std::move(ev));
+            }
         }
         return evs;
     };
 
-    // If the compiled eBPF object is absent, use ptrace directly.
     if (access(BPF_OBJ_PATH, R_OK) != 0)
         return ptrace_watch();
 
-    // eBPF path: any exception (e.g. no CAP_BPF) degrades gracefully to ptrace.
+    // Step 3: eBPF path.
+    // Map runtime_addr → targets index for per-event function attribution.
+    // func_addr in RawEvent comes from bpf_get_func_ip(ctx) = virtual address of
+    // the probed function in the target process.
+    uint64_t slide = impl_->get_aslr_slide();
+    std::unordered_map<uint64_t, std::size_t> addr_to_idx;
+    for (std::size_t i = 0; i < targets.size(); ++i)
+        addr_to_idx[targets[i].address + slide] = i;
+
+    // Entry cache: tid → {args[6], target_index}
+    struct EntryData {
+        std::array<uint64_t, 6> args;
+        std::size_t             idx{0};
+    };
+    std::unordered_map<uint32_t, EntryData> entry_cache;
+
     std::vector<WatchEvent> events;
     events.reserve(max_events);
-    // Cache entry-event args by TID: the BPF program clears args[] in exit events,
-    // so we must save them when the entry event arrives and look them up on exit.
-    std::unordered_map<uint32_t, std::array<uint64_t, 6>> entry_args;
+
     try {
         ebpf::UprobeLoader loader(impl_->pid, BPF_OBJ_PATH);
-        loader.attach(info.address);
+        for (const auto& fi : targets)
+            loader.attach(fi.address);
 
         auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeout_ms);
@@ -229,25 +251,33 @@ AttachEngine::watch_checked(const std::string& func_name,
 
             loader.poll(remaining, [&](const ebpf::RawEvent& raw) {
                 if (!raw.is_exit) {
-                    // Entry event: save args[0..5] keyed by TID for later.
-                    std::array<uint64_t, 6> a;
-                    std::copy(std::begin(raw.args), std::end(raw.args), a.begin());
-                    entry_args[raw.tid] = a;
+                    // Entry event: cache args and identify which function via func_addr.
+                    auto ait = addr_to_idx.find(raw.func_addr);
+                    if (ait == addr_to_idx.end()) return;
+                    EntryData ed;
+                    std::copy(std::begin(raw.args), std::end(raw.args), ed.args.begin());
+                    ed.idx = ait->second;
+                    entry_cache[raw.tid] = ed;
                     return;
                 }
                 if (static_cast<int>(events.size()) >= max_events) return;
 
+                // Exit event: attribute to the correct function via func_addr.
+                auto ait = addr_to_idx.find(raw.func_addr);
+                if (ait == addr_to_idx.end()) return;
+                const FuncInfo& fi = targets[ait->second];
+
                 WatchEvent ev;
                 ev.timestamp_ns = raw.timestamp_ns;
                 ev.duration_ns  = raw.duration_ns;
-                ev.func_name    = func_name;
-                ev.ret_value    = format_int_val(raw.ret_val, info.return_type);
+                ev.func_name    = fi.name;
+                ev.ret_value    = format_int_val(raw.ret_val, fi.return_type);
 
-                auto it = entry_args.find(raw.tid);
-                if (it != entry_args.end()) {
-                    ev.params = format_params(info.param_types, it->second.data(),
-                                              info.has_this);
-                    entry_args.erase(it);
+                auto cit = entry_cache.find(raw.tid);
+                if (cit != entry_cache.end() && cit->second.idx == ait->second) {
+                    ev.params = format_params(fi.param_types, cit->second.args.data(),
+                                              fi.has_this);
+                    entry_cache.erase(cit);
                 }
 
                 events.push_back(std::move(ev));
