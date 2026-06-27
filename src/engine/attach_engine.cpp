@@ -16,6 +16,7 @@
 #include <sstream>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <elf.h>
 #include <fcntl.h>
 #include <map>
@@ -175,6 +176,15 @@ std::string format_int_val(uint64_t v, const std::string& type_name) {
 
 } // namespace
 
+// Atomic flag set by request_stop() (called from SIGINT handler) to request
+// early termination of the current command.  Cleared at the start of each
+// command so the REPL can continue normally after Ctrl-C.
+static std::atomic<bool> s_stop_flag{false};
+
+void uatu::request_stop() {
+    s_stop_flag.store(true, std::memory_order_relaxed);
+}
+
 // Forward declarations for file-scope helpers used by Impl::get_aslr_slide().
 static uint64_t elf_min_vaddr(const std::string& path);
 static uint64_t get_load_base(int pid, const std::string& exe_path);
@@ -219,6 +229,8 @@ AttachEngine::~AttachEngine() = default;
 tl::expected<std::vector<WatchEvent>, EngineError>
 AttachEngine::watch_checked(const std::string& func_name,
                             int max_events, int timeout_ms) {
+    s_stop_flag.store(false, std::memory_order_relaxed);
+
     // Step 1: Resolve targets — exact match first, regex fallback.
     std::vector<FuncInfo> targets;
     try {
@@ -291,12 +303,15 @@ AttachEngine::watch_checked(const std::string& func_name,
                         std::chrono::milliseconds(timeout_ms);
 
         while (static_cast<int>(events.size()) < max_events) {
+            if (s_stop_flag.load(std::memory_order_relaxed)) break;
             auto now       = std::chrono::steady_clock::now();
             if (now >= deadline) break;
             int remaining = static_cast<int>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+            // Cap each poll at 100 ms so Ctrl-C is checked frequently.
+            int poll_ms = std::min(remaining, 100);
 
-            loader.poll(remaining, [&](const ebpf::RawEvent& raw) {
+            loader.poll(poll_ms, [&](const ebpf::RawEvent& raw) {
                 if (!raw.is_exit) {
                     // Entry event: cache args, identify function, pre-resolve char* params.
                     auto ait = addr_to_idx.find(raw.func_addr);
@@ -481,6 +496,8 @@ static bool waitpid_timeout(pid_t pid, int& wstatus, int timeout_ms) {
 
 std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
                                            int count, int timeout_ms) {
+    s_stop_flag.store(false, std::memory_order_relaxed);
+
     // 1. DWARF lookup (SymbolFinder is cached in Impl after first call)
     auto opt = impl_->get_finder().find(func_name);
     if (!opt)
@@ -553,6 +570,7 @@ std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
     // to avoid double-continuing a running tracee.
     bool need_cont = true;
     while (static_cast<int>(results.size()) < count) {
+        if (s_stop_flag.load(std::memory_order_relaxed)) break;
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) break;
 
@@ -654,6 +672,8 @@ std::vector<TraceNode> AttachEngine::trace(const std::string& func_name,
 // ---------------------------------------------------------------------------
 std::vector<StackEvent> AttachEngine::stack(const std::string& func_name,
                                              int count, int timeout_ms) {
+    s_stop_flag.store(false, std::memory_order_relaxed);
+
     auto& finder = impl_->get_finder();
     auto  opt    = finder.find(func_name);
     if (!opt)
@@ -737,6 +757,7 @@ std::vector<StackEvent> AttachEngine::stack(const std::string& func_name,
 
     bool need_cont = true;
     while (static_cast<int>(results.size()) < count) {
+        if (s_stop_flag.load(std::memory_order_relaxed)) break;
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) break;
 

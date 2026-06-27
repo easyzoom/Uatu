@@ -9,6 +9,11 @@ namespace uatu {
 
 struct EngineError { std::string message; };
 
+// Request early termination of the currently running watch/trace/stack command.
+// Safe to call from a SIGINT signal handler.  The flag is cleared automatically
+// at the start of the next command so the REPL can continue normally.
+void request_stop();
+
 class AttachEngine {
 public:
     explicit AttachEngine(int pid);

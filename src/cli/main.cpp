@@ -1,5 +1,6 @@
 #include "uatu/engine/attach_engine.h"
 #include "uatu/cli/formatter.h"
+#include <csignal>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -21,6 +22,8 @@ static void list_processes() {
            "  [ -n \"$exe\" ] && echo \"  pid=$pid  $exe\"; "
            "done | head -20");
 }
+
+static void on_sigint(int) { uatu::request_stop(); }
 
 int main(int argc, char** argv) {
     int pid = -1;
@@ -45,6 +48,8 @@ int main(int argc, char** argv) {
 
     std::cout << "uatu " << pid << " attached\n";
     std::cout << "Commands: watch <func>  trace <func>  stack <func>  help  quit\n\n";
+
+    std::signal(SIGINT, on_sigint);
 
     uatu::AttachEngine engine(pid);
 
@@ -101,6 +106,10 @@ int main(int argc, char** argv) {
         } catch (const std::exception& e) {
             std::cout << "Error: " << e.what() << "\n";
         }
+        // If the user pressed Ctrl-C during the command, print a newline so
+        // the next prompt appears on a clean line after the terminal's "^C" echo.
+        if (std::cin.good())
+            std::cout << std::flush;
     }
 
     std::cout << "\nDetached. Bye.\n";
