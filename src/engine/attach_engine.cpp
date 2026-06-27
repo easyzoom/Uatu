@@ -181,7 +181,7 @@ std::string format_int_val(uint64_t v, const std::string& type_name) {
 // command so the REPL can continue normally after Ctrl-C.
 static std::atomic<bool> s_stop_flag{false};
 
-void uatu::request_stop() {
+void request_stop() {
     s_stop_flag.store(true, std::memory_order_relaxed);
 }
 
