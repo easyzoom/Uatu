@@ -1,8 +1,3 @@
-find_package(GTest CONFIG QUIET)
-if(NOT GTest_FOUND)
-    find_package(GTest REQUIRED)
-endif()
-
 add_executable(test_watch test_watch.cpp)
 target_link_libraries(test_watch PRIVATE
     uatu_includes

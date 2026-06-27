@@ -46,8 +46,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build \
-            libdw-dev libelf-dev zlib1g-dev \
-            libgtest-dev
+            libdw-dev libelf-dev zlib1g-dev
 
       - name: Build vendored libbpf
         run: |
@@ -139,9 +138,14 @@ jobs:
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           sudo dpkg --add-architecture arm64
-          # Restrict default sources to amd64 so apt doesn't mix arches
+          # Restrict default sources to amd64 so apt doesn't mix arches,
+          # then add arm64 ports including -updates/-security so package
+          # versions match what is already installed for amd64.
           sudo sed -i 's/^deb /deb [arch=amd64,i386] /g' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe" \
+          printf '%s\n' \
+            "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy           main restricted universe" \
+            "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates   main restricted universe" \
+            "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security  main restricted universe" \
             | sudo tee /etc/apt/sources.list.d/arm64-ports.list
           sudo apt-get update
           sudo apt-get install -y \
@@ -155,7 +159,10 @@ jobs:
             gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
           sudo dpkg --add-architecture riscv64
           sudo sed -i 's/^deb /deb [arch=amd64,i386] /g' /etc/apt/sources.list
-          echo "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe" \
+          printf '%s\n' \
+            "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports jammy           main restricted universe" \
+            "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports jammy-updates   main restricted universe" \
+            "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports jammy-security  main restricted universe" \
             | sudo tee /etc/apt/sources.list.d/riscv64-ports.list
           sudo apt-get update
           sudo apt-get install -y \
@@ -164,20 +171,18 @@ jobs:
       # ── Build vendored libbpf (with cross-compiler if needed) ──
       - name: Build vendored libbpf
         run: |
-          CROSS_ARG=""
-          if [ -n "${{ matrix.cross_triple }}" ]; then
-            CROSS_ARG="CROSS_COMPILE=${{ matrix.cross_triple }}-"
+          TRIPLE="${{ matrix.cross_triple }}"
+          OBJDIR="${{ github.workspace }}/build/libbpf"
+          if [ -n "$TRIPLE" ]; then
+            # Cross-compilation: pass CC/AR explicitly (the package installs
+            # *-gcc, not *-cc) and point pkg-config at the target-arch libs.
+            EXTRA="CC=${TRIPLE}-gcc AR=${TRIPLE}-ar PKG_CONFIG_PATH=/usr/lib/${TRIPLE}/pkgconfig"
+          else
+            EXTRA=""
           fi
-          make -C third_party/libbpf/src \
-            BUILD_STATIC_ONLY=1 \
-            OBJDIR=${{ github.workspace }}/build/libbpf \
-            $CROSS_ARG
-          make -C third_party/libbpf/src \
-            BUILD_STATIC_ONLY=1 \
-            OBJDIR=${{ github.workspace }}/build/libbpf \
-            DESTDIR=${{ github.workspace }}/build/libbpf \
-            PREFIX="" install \
-            $CROSS_ARG
+          make -C third_party/libbpf/src BUILD_STATIC_ONLY=1 OBJDIR="$OBJDIR" $EXTRA
+          make -C third_party/libbpf/src BUILD_STATIC_ONLY=1 OBJDIR="$OBJDIR" \
+            DESTDIR="$OBJDIR" PREFIX="" install $EXTRA
 
       # ── CMake configure + build ────────────────────────────
       - name: Configure

@@ -1,8 +1,3 @@
-find_package(GTest CONFIG QUIET)
-if(NOT GTest_FOUND)
-    find_package(GTest REQUIRED)
-endif()
-
 add_executable(test_symbol_finder test_symbol_finder.cpp)
 target_link_libraries(test_symbol_finder PRIVATE
     uatu_includes

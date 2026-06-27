@@ -12,7 +12,25 @@ endif()
 
 find_package(nlohmann_json CONFIG QUIET)
 find_package(replxx        CONFIG QUIET)
-find_package(GTest         CONFIG QUIET)
+
+# GTest: system first, FetchContent fallback (libgtest-dev ships source only on Ubuntu 22.04)
+find_package(GTest CONFIG QUIET)
+if(NOT GTest_FOUND)
+    find_package(GTest QUIET)
+endif()
+if(NOT GTest_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG        v1.14.0
+        GIT_SHALLOW    TRUE
+    )
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    set(BUILD_GMOCK   OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+    message(STATUS "GTest: using FetchContent (v1.14.0)")
+endif()
 
 # tl-expected: system/vcpkg first, FetchContent fallback (not in Ubuntu 22.04 apt)
 find_package(tl-expected CONFIG QUIET)
@@ -36,9 +54,18 @@ target_include_directories(uatu_includes INTERFACE
     $<INSTALL_INTERFACE:include>
 )
 
-# eBPF compilation (optional — skipped if clang/bpftool not found)
-find_program(CLANG clang)
-find_program(BPFTOOL bpftool)
+# eBPF compilation (optional — skipped if clang/bpftool not found,
+# or when cross-compiling: BPF programs run on the HOST kernel so they
+# must be compiled with host-architecture register types; cross-built
+# binaries use ptrace mode and load eBPF at runtime from source builds).
+if(CMAKE_CROSSCOMPILING)
+    message(STATUS "Cross-compiling — eBPF compilation skipped (ptrace mode only)")
+    set(CLANG   "CLANG-NOTFOUND"   CACHE FILEPATH "" FORCE)
+    set(BPFTOOL "BPFTOOL-NOTFOUND" CACHE FILEPATH "" FORCE)
+else()
+    find_program(CLANG clang)
+    find_program(BPFTOOL bpftool)
+endif()
 
 # Locate BPF helper headers for clang -target bpf compilation.
 # Prefer /usr/include/bpf (libbpf-dev); fall back to kernel linux-headers.
